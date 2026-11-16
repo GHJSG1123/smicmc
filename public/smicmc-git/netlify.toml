@@ -1,0 +1,19 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# 浏览器请求 /api/... 时交给函数处理；函数跑在服务器上，再去访问 Supabase
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# 其余路径全部交给单页应用
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
