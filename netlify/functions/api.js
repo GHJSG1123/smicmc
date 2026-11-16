@@ -9,7 +9,7 @@
  * publishable key 也只出现在服务器端，不暴露在前端代码里。
  */
 
-const SUPABASE = 'https://uadpbsgfithsrkngjnu.supabase.co';
+const SUPABASE = 'https://uadpbsgfithscrknqjnu.supabase.co';
 const ANON_KEY = 'sb_publishable_Eu-_IB5Uigc8BZrl6DZb5w_zwPvkjm3';
 
 exports.handler = async function (event) {
