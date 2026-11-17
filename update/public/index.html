@@ -484,6 +484,23 @@ select.input{appearance:none}
 .msg-input{display:flex;gap:8px;align-items:flex-end;margin-top:12px}
 .msg-input .input{min-height:42px;max-height:120px;resize:none;padding:11px 13px}
 
+/* ---------------- 顶栏头像 / 侧栏用户 ---------------- */
+.user-chip{
+  width:32px;height:32px;border-radius:50%;flex:none;
+  display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;
+  background:linear-gradient(135deg,hsl(var(--h,340) 62% 50%),hsl(calc(var(--h,340) + 45) 66% 40%));
+  transition:transform .15s ease;
+}
+.user-chip:hover{transform:scale(1.06)}
+.side-user{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 10px;margin-bottom:8px;border-radius:10px;
+  background:rgba(255,255,255,.035);
+}
+.side-user:hover{background:rgba(255,255,255,.06)}
+.side-user .avatar{width:26px;height:26px;font-size:12px}
+.side-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 </style>
 </head>
 <body>
@@ -501,7 +518,8 @@ select.input{appearance:none}
 
   <div class="topbar-right">
     <button class="link-btn" id="btn-login">登录</button>
-    <button class="btn btn-outline btn-sm" id="btn-register">注册</button>
+    <button class="btn btn-outline btn-sm" id="btn-register">注册</button><a class="user-chip hidden" id="user-chip" href="#/me" title="我的"></a>
+    <a class="user-chip hidden" id="user-chip" href="#/me" title="我的"></a>
     <a class="btn btn-primary btn-sm" href="#/new">+ 发布</a>
   </div>
 </header>
@@ -510,7 +528,8 @@ select.input{appearance:none}
 
 <div class="layout">
 
-  <aside class="sidenav">
+  <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a>
+    <a class="side-user hidden" id="side-user" href="#/me"></a>
     <a href="#/" data-nav="feed"><span class="nav-ico">🏠</span>首页</a>
     <a href="#/hot" data-nav="hot"><span class="nav-ico">🔥</span>热榜</a>
     <a href="#/new" data-nav="new"><span class="nav-ico">✍️</span>发布</a>
@@ -746,18 +765,31 @@ select.input{appearance:none}
   function nick() { return account ? account.username : null; }
 
   function paintUserChip() {
-    const btn = $('#user-chip');
-    if (!btn) return;
+    const chip = $('#user-chip');
+    const loginBtn = $('#btn-login');
+    const regBtn = $('#btn-register');
+    const side = $('#side-user');
+
     if (isLoggedIn()) {
-      const n = nick();
-      btn.classList.add('on');
-      btn.style.setProperty('--h', hue(n));
-      btn.innerHTML = esc(n.charAt(0));
-      btn.title = n;
+      const n = nick() || '我';
+      if (chip) {
+        chip.classList.remove('hidden');
+        chip.style.setProperty('--h', hue(n));
+        chip.textContent = n.charAt(0);
+        chip.title = n;
+      }
+      if (loginBtn) loginBtn.classList.add('hidden');
+      if (regBtn) regBtn.classList.add('hidden');
+      if (side) {
+        side.classList.remove('hidden');
+        side.innerHTML = '<span class="avatar" style="--h:' + hue(n) + '">' + esc(n.charAt(0)) + '</span>' +
+          '<span class="side-name">' + esc(n) + '</span>';
+      }
     } else {
-      btn.classList.remove('on');
-      btn.innerHTML = '<span class="user-dot"></span>';
-      btn.title = '登录 / 注册';
+      if (chip) chip.classList.add('hidden');
+      if (loginBtn) loginBtn.classList.remove('hidden');
+      if (regBtn) regBtn.classList.remove('hidden');
+      if (side) side.classList.add('hidden');
     }
   }
 
@@ -967,11 +999,7 @@ select.input{appearance:none}
     $('#a-pass').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   }
 
-  const chipBtn = $('#user-chip');
-  if (chipBtn) chipBtn.addEventListener('click', () => {
-    if (isLoggedIn()) location.hash = '#/me';
-    else openAuth('login');
-  });
+
 
   const btnLogin = $('#btn-login');
   if (btnLogin) btnLogin.addEventListener('click', () => openAuth('login'));
