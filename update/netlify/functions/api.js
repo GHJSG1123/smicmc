@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Netlify Function：Supabase 反向代理
  *
  * 浏览器 → https://smicmc.qd.je/api/rest/v1/posts
@@ -27,6 +27,13 @@ exports.handler = async function (event) {
   if (path === '/auth/register' || path === '/auth/login') {
     return handleAuth(path === '/auth/register', event);
   }
+
+  /* 个人空间 / 私信 */
+  if (path === '/user/get')    return handleUserGet(event);
+  if (path === '/user/update') return handleUserUpdate(event);
+  if (path === '/msg/send')    return handleMsgSend(event);
+  if (path === '/msg/inbox')   return handleMsgInbox(event);
+  if (path === '/msg/thread')  return handleMsgThread(event);
 
   const qs = event.rawQuery ? '?' + event.rawQuery : '';
   const target = SUPABASE + path + qs;
@@ -158,12 +165,12 @@ async function handleAuth(isRegister, event) {
       });
       const row = created && created[0];
       if (!row) return json(500, { message: '注册失败，请重试' });
-      return json(200, { id: row.id, username: row.username });
+      return json(200, { id: row.id, username: row.username, token: makeToken(row.id) });
     }
 
     if (!exist) return json(401, { message: '用户名或密码不对' });
     if (exist.pass_hash !== hashPass(username, password)) return json(401, { message: '用户名或密码不对' });
-    return json(200, { id: exist.id, username: exist.username });
+    return json(200, { id: exist.id, username: exist.username, token: makeToken(exist.id) });
   } catch (err) {
     const msg = String(err.message || '');
     if (msg.indexOf('duplicate') >= 0 || msg.indexOf('23505') >= 0) {
@@ -173,5 +180,172 @@ async function handleAuth(isRegister, event) {
       return json(500, { message: '还没建 profiles 表，请先在 Supabase 跑建表 SQL' });
     }
     return json(500, { message: '服务器错误：' + msg.slice(0, 120) });
+  }
+}
+
+/* =====================================================================
+   令牌 + 个人空间 + 私信
+   ===================================================================== */
+const TOKEN_TTL = 30 * 24 * 3600 * 1000;
+
+function makeToken(uid) {
+  const payload = Buffer.from(JSON.stringify({ u: uid, x: Date.now() + TOKEN_TTL })).toString('base64url');
+  const sig = crypto.createHmac('sha256', PEPPER).update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+function verifyToken(tok) {
+  if (!tok || String(tok).indexOf('.') < 0) return null;
+  const parts = String(tok).split('.');
+  const payload = parts[0], sig = parts[1];
+  const expect = crypto.createHmac('sha256', PEPPER).update(payload).digest('base64url');
+  if (sig !== expect) return null;
+  try {
+    const o = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (!o.u || !o.x || o.x < Date.now()) return null;
+    return o.u;
+  } catch (e) { return null; }
+}
+
+function bearer(event) {
+  const h = event.headers.authorization || event.headers.Authorization || '';
+  return String(h).replace(/^Bearer\s+/i, '').trim();
+}
+
+function authUid(event) { return verifyToken(bearer(event)); }
+
+function readBody(event) {
+  try { return JSON.parse(event.body || '{}'); } catch (e) { return null; }
+}
+
+/* ---------------- 个人空间 ---------------- */
+async function handleUserGet(event) {
+  const body = readBody(event);
+  if (!body || !body.username) return json(400, { message: '缺少用户名' });
+  try {
+    const rows = await sb('profiles?username=eq.' + encodeURIComponent(body.username) + '&select=id,username,bio,tags,created_at');
+    const p = rows && rows[0];
+    if (!p) return json(404, { message: '没有这个用户' });
+
+    let postCount = 0;
+    try {
+      const posts = await sb('posts?author_id=eq.' + p.id + '&select=id&limit=1000');
+      postCount = (posts || []).length;
+    } catch (e) {}
+
+    return json(200, {
+      id: p.id, username: p.username, bio: p.bio || '',
+      tags: p.tags || [], created_at: p.created_at, postCount: postCount
+    });
+  } catch (err) {
+    return json(500, { message: '查询失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleUserUpdate(event) {
+  const uid = authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+  const body = readBody(event);
+  if (!body) return json(400, { message: '请求格式不对' });
+
+  const bio = String(body.bio || '').slice(0, 120);
+  let tags = Array.isArray(body.tags) ? body.tags : [];
+  tags = tags.map(function (t) { return String(t).trim().slice(0, 10); })
+             .filter(Boolean).slice(0, 6);
+
+  try {
+    await sb('profiles?id=eq.' + uid, {
+      method: 'PATCH',
+      body: JSON.stringify({ bio: bio, tags: tags })
+    });
+    return json(200, { ok: true, bio: bio, tags: tags });
+  } catch (err) {
+    return json(500, { message: '保存失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 私信 ---------------- */
+async function handleMsgSend(event) {
+  const uid = authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+  const body = readBody(event);
+  if (!body) return json(400, { message: '请求格式不对' });
+
+  const to = String(body.to || '').trim();
+  const content = String(body.content || '').trim();
+  if (!to) return json(400, { message: '缺少收件人' });
+  if (!content) return json(400, { message: '内容不能为空' });
+  if (content.length > 500) return json(400, { message: '消息最多 500 字' });
+
+  try {
+    const rows = await sb('profiles?username=eq.' + encodeURIComponent(to) + '&select=id,username');
+    const target = rows && rows[0];
+    if (!target) return json(404, { message: '没有这个用户' });
+    if (target.id === uid) return json(400, { message: '不能给自己发私信' });
+
+    const created = await sb('messages', {
+      method: 'POST',
+      body: JSON.stringify({ from_id: uid, to_id: target.id, content: content })
+    });
+    return json(200, (created && created[0]) || { ok: true });
+  } catch (err) {
+    return json(500, { message: '发送失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleMsgInbox(event) {
+  const uid = authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+  try {
+    const rows = await sb('messages?or=(from_id.eq.' + uid + ',to_id.eq.' + uid +
+      ')&order=created_at.desc&limit=200&select=id,from_id,to_id,content,created_at,read_at');
+    const list = rows || [];
+    const others = {};
+    list.forEach(function (m) {
+      const other = m.from_id === uid ? m.to_id : m.from_id;
+      if (!others[other]) {
+        others[other] = { id: other, last: m.content, lastAt: m.created_at, unread: 0 };
+      }
+      if (m.to_id === uid && !m.read_at) others[other].unread++;
+    });
+    const ids = Object.keys(others);
+    if (ids.length) {
+      const profs = await sb('profiles?id=in.(' + ids.join(',') + ')&select=id,username');
+      (profs || []).forEach(function (p) { if (others[p.id]) others[p.id].username = p.username; });
+    }
+    const arr = Object.values(others).sort(function (a, b) {
+      return new Date(b.lastAt) - new Date(a.lastAt);
+    });
+    return json(200, arr);
+  } catch (err) {
+    return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleMsgThread(event) {
+  const uid = authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+  const body = readBody(event);
+  const withName = body && String(body.with || '').trim();
+  if (!withName) return json(400, { message: '缺少对话对象' });
+
+  try {
+    const rows = await sb('profiles?username=eq.' + encodeURIComponent(withName) + '&select=id,username');
+    const other = rows && rows[0];
+    if (!other) return json(404, { message: '没有这个用户' });
+
+    const filter = 'or=(and(from_id.eq.' + uid + ',to_id.eq.' + other.id + '),and(from_id.eq.' + other.id + ',to_id.eq.' + uid + '))';
+    const msgs = await sb('messages?' + filter + '&order=created_at.asc&limit=200&select=id,from_id,to_id,content,created_at');
+
+    try {
+      await sb('messages?from_id=eq.' + other.id + '&to_id=eq.' + uid + '&read_at=is.null', {
+        method: 'PATCH',
+        body: JSON.stringify({ read_at: new Date().toISOString() })
+      });
+    } catch (e) {}
+
+    return json(200, { other: { id: other.id, username: other.username }, messages: msgs || [] });
+  } catch (err) {
+    return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
   }
 }

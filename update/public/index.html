@@ -448,6 +448,42 @@ select.input{appearance:none}
   body{padding-bottom:0}
 }
 
+/* ---------------- 个人空间 ---------------- */
+.profile-bio{font-size:13px;color:var(--muted);margin-top:8px;line-height:1.7;padding:0 12px}
+.profile-tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+.profile-actions{display:flex;gap:8px;justify-content:center;margin-top:16px}
+
+/* ---------------- 私信 ---------------- */
+.dm-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.dm-row:last-child{border-bottom:0}
+.dm-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.dm-top{display:flex;align-items:baseline;gap:8px}
+.dm-top b{font-size:13.5px;font-weight:600}
+.dm-top em{font-style:normal;font-size:11.5px;color:var(--faint);margin-left:auto}
+.dm-last{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dm-badge{
+  flex:none;min-width:18px;height:18px;border-radius:9px;background:var(--red);color:#fff;
+  font-size:11px;display:grid;place-items:center;padding:0 5px;
+}
+.dm-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.dm-name{font-size:15px;font-weight:600}
+.msg-list{
+  display:flex;flex-direction:column;gap:10px;
+  max-height:56vh;overflow-y:auto;padding:14px;
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);
+}
+.msg-row{display:flex;flex-direction:column;gap:3px;max-width:78%}
+.msg-row.me{align-self:flex-end;align-items:flex-end}
+.msg-row.them{align-self:flex-start;align-items:flex-start}
+.msg-bubble{
+  padding:9px 13px;border-radius:14px;font-size:14px;line-height:1.6;
+  background:var(--card-2);border:1px solid var(--border);word-break:break-word;white-space:pre-wrap;
+}
+.msg-row.me .msg-bubble{background:var(--red);border-color:transparent;color:#fff}
+.msg-time{font-size:10.5px;color:var(--faint)}
+.msg-input{display:flex;gap:8px;align-items:flex-end;margin-top:12px}
+.msg-input .input{min-height:42px;max-height:120px;resize:none;padding:11px 13px}
+
 </style>
 </head>
 <body>
@@ -669,9 +705,11 @@ select.input{appearance:none}
     const o = opts || {};
     let res;
     try {
+      const h = { 'Content-Type': 'application/json' };
+      if (account && account.token) h.Authorization = 'Bearer ' + account.token;
       res = await fetch(SB + path, {
         method: o.method || 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: h,
         body: o.body
       });
     } catch (e) {
@@ -690,7 +728,7 @@ select.input{appearance:none}
       method: 'POST',
       body: JSON.stringify({ username: username, password: password })
     });
-    saveAccount({ id: r.id, username: r.username });
+    saveAccount({ id: r.id, username: r.username, token: r.token });
     return r;
   }
 
@@ -699,7 +737,7 @@ select.input{appearance:none}
       method: 'POST',
       body: JSON.stringify({ username: username, password: password })
     });
-    saveAccount({ id: r.id, username: r.username });
+    saveAccount({ id: r.id, username: r.username, token: r.token });
     return r;
   }
 
@@ -1260,149 +1298,192 @@ select.input{appearance:none}
 
   /* ================= 视图：我的 ================= */
   async function viewMe() {
+    if (isLoggedIn()) return viewUser(account.username);
+    app.innerHTML = '<h1 class="page-title">我的</h1>' +
+      empty('👤', '还没登录', '登录后才有自己的空间、私信和帖子记录。',
+        '<button class="btn btn-primary" id="me-login">登录 / 注册</button>');
+    const b = $('#me-login');
+    if (b) b.addEventListener('click', () => openAuth('login'));
+  }
+
+  /* ================= 个人空间 ================= */
+  async function viewUser(username) {
     app.innerHTML = '<div class="loading">加载中…</div>';
-    try { await loadPosts(); } catch (e) { app.innerHTML = errState(e); return; }
-
-    let posts;
-    if (isLoggedIn() && S.hasAuthorId) {
-      try {
-        posts = await rest('posts?author_id=eq.' + account.id + '&select=*&order=created_at.desc&limit=50');
-      } catch (e) { posts = S.posts.filter(p => myIds().includes(p.id)); }
-    } else {
-      posts = S.posts.filter(p => myIds().includes(p.id));
+    let p;
+    try {
+      p = await apiRaw('/user/get', { method: 'POST', body: JSON.stringify({ username: username }) });
+    } catch (e) {
+      app.innerHTML = empty('👤', '找不到这个用户', esc(e.message), '<a class="btn" href="#/">回首页</a>');
+      return;
     }
-    posts = posts || [];
 
-    const name = nick() || alias();
-    const first = localStorage.getItem('gua:first') || new Date().toISOString();
-    const days = Math.max(1, Math.round((Date.now() - new Date(first).getTime()) / 86400000) + 1);
-    const level = posts.length >= 10 ? '资深瓜农' : posts.length >= 3 ? '瓜田常客' : '吃瓜群众';
+    const isMe = isLoggedIn() && account.id === p.id;
+    const days = Math.max(1, Math.floor((Date.now() - new Date(p.created_at).getTime()) / 86400000) + 1);
+    let posts = [];
+    try {
+      posts = await rest('posts?author_id=eq.' + p.id + '&select=*&order=created_at.desc&limit=30');
+    } catch (e) { posts = []; }
 
     app.innerHTML =
       '<div class="profile-card">' +
-        '<div class="profile-avatar" style="--h:' + hue(name) + '">' + esc(name.charAt(0)) + '</div>' +
-        '<div class="profile-name">' + esc(name) + '</div>' +
-        '<div class="profile-sub">' + (isLoggedIn() ? '已登录 · ' + esc(account.username) : '未登录 · 身份仅存于本设备') + '</div>' +
+        '<div class="profile-avatar" style="--h:' + hue(p.username) + '">' + esc(p.username.charAt(0)) + '</div>' +
+        '<div class="profile-name">' + esc(p.username) + '</div>' +
+        (p.bio ? '<div class="profile-bio">' + esc(p.bio) + '</div>' : '') +
+        (p.tags && p.tags.length
+          ? '<div class="profile-tags">' + p.tags.map(t => '<span class="tag">#' + esc(t) + '</span>').join('') + '</div>'
+          : '') +
         '<div class="profile-stats">' +
-          '<div class="stat"><b>' + posts.length + '</b><span>发布</span></div>' +
-          '<div class="stat"><b>' + days + '</b><span>天数</span></div>' +
-          '<div class="stat"><b>' + level + '</b><span>等级</span></div>' +
+          '<div class="stat"><b>' + days + '</b><span>加入天数</span></div>' +
+          '<div class="stat"><b>' + (p.postCount || 0) + '</b><span>帖子</span></div>' +
+        '</div>' +
+        '<div class="profile-actions">' +
+          (isMe
+            ? '<button class="btn btn-sm" id="p-edit">编辑资料</button>'
+            : '<button class="btn btn-primary btn-sm" id="p-dm">发私信</button>') +
         '</div>' +
       '</div>' +
-      '<div class="menu-list">' +
-        (isLoggedIn()
-          ? '<button class="menu-item" id="me-logout">退出登录<span class="arrow">›</span></button>'
-          : '<button class="menu-item" id="me-login">登录 / 注册<span class="arrow">›</span></button>') +
-        '<a class="menu-item" href="#/admin">管理后台<span class="arrow">›</span></a>' +
-      '</div>' +
-      '<h3 class="section-title">我发布的 <span class="hint">' + posts.length + '</span></h3>' +
+      (isMe
+        ? '<div class="menu-list">' +
+            '<a class="menu-item" href="#/messages">私信<span class="arrow">›</span></a>' +
+            '<a class="menu-item" href="#/admin">管理后台<span class="arrow">›</span></a>' +
+            '<button class="menu-item" id="p-logout">退出登录<span class="arrow">›</span></button>' +
+          '</div>'
+        : '') +
+      '<h3 class="section-title">' + (isMe ? '我发布的' : 'TA 的帖子') +
+        ' <span class="hint">' + (p.postCount || 0) + '</span></h3>' +
       '<div>' + (posts.length ? posts.map(card).join('')
-        : empty('✍️', '还没发过', '你发过的瓜会出现在这里。', '<a class="btn btn-primary" href="#/new">发第一条</a>')) + '</div>';
+        : empty('✍️', isMe ? '还没发过' : '还没发过帖子', isMe ? '你发过的瓜会出现在这里。' : '',
+            isMe ? '<a class="btn btn-primary" href="#/new">发第一条</a>' : '')) + '</div>';
 
-    const lg = $('#me-login');
-    if (lg) lg.addEventListener('click', () => openAuth('login'));
-    const lo = $('#me-logout');
-    if (lo) lo.addEventListener('click', async () => {
-      await signOut();
+    const edit = $('#p-edit');
+    if (edit) edit.addEventListener('click', () => openProfileEdit(p));
+
+    const dm = $('#p-dm');
+    if (dm) dm.addEventListener('click', () => { location.hash = '#/messages/' + encodeURIComponent(p.username); });
+
+    const out = $('#p-logout');
+    if (out) out.addEventListener('click', () => {
+      signOut();
       toast('已退出登录');
-      route();
+      location.hash = '#/';
     });
   }
 
-  /* ================= 管理后台 ================= */
-  async function adminRest(path, opts) {
-    const pw = sessionStorage.getItem('gua:admin') || '';
-    const o = opts || {};
-    return rest(path, Object.assign({}, o, {
-      headers: Object.assign({ 'x-admin-key': pw }, o.headers || {})
-    }));
+  /* 编辑资料 */
+  function openProfileEdit(p) {
+    openModal('<h3>编辑资料</h3><p class="modal-sub">简介和标签会显示在你的个人空间</p>' +
+      '<div class="auth-field"><label>一句话简介</label>' +
+        '<input class="input" id="e-bio" maxlength="60" placeholder="比如：三教常驻，选课焦虑专业户" value="' + esc(p.bio || '') + '" /></div>' +
+      '<div class="auth-field"><label>个人标签（最多 6 个，用逗号分隔）</label>' +
+        '<input class="input" id="e-tags" placeholder="学霸，夜猫子，干饭王" value="' + esc((p.tags || []).join('，')) + '" /></div>' +
+      '<div id="e-msg"></div>' +
+      '<div class="modal-foot"><button class="btn" id="e-cancel">取消</button>' +
+      '<button class="btn btn-primary" id="e-save">保存</button></div>');
+
+    $('#e-cancel').addEventListener('click', closeModal);
+    $('#e-save').addEventListener('click', async () => {
+      const bio = $('#e-bio').value.trim();
+      const tags = $('#e-tags').value.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean).slice(0, 6);
+      const btn = $('#e-save');
+      btn.disabled = true; btn.textContent = '保存中…';
+      try {
+        await apiRaw('/user/update', { method: 'POST', body: JSON.stringify({ bio: bio, tags: tags }) });
+        closeModal();
+        toast('资料已保存');
+        viewUser(account.username);
+      } catch (e) {
+        $('#e-msg').innerHTML = '<div class="auth-alert">' + esc(e.message) + '</div>';
+        btn.disabled = false; btn.textContent = '保存';
+      }
+    });
   }
 
-  const REASON_LABEL = { privacy:'侵犯隐私', attack:'人身攻击', rumor:'造谣', nsfw:'色情低俗', spam:'广告', other:'其他' };
-
-  async function viewAdmin() {
-    const pw = sessionStorage.getItem('gua:admin');
-
-    if (!pw) {
-      app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
-        '<div class="form">' +
-          '<div class="field"><label>管理口令</label>' +
-            '<input class="input" id="adm-pw" type="password" placeholder="输入口令后回车" />' +
-          '</div>' +
-          '<button class="btn btn-primary btn-block" id="adm-go">进入</button>' +
-          '<div class="hint" style="margin-top:14px;line-height:1.9">' +
-            '默认口令 <b style="color:var(--fg-soft)">gua2026</b><br>' +
-            '想换的话：Netlify → Site configuration → Environment variables → 新增 <code>ADMIN_PASSWORD</code>' +
-          '</div>' +
-        '</div>';
-      const go = () => {
-        const v = $('#adm-pw').value.trim();
-        if (!v) return;
-        sessionStorage.setItem('gua:admin', v);
-        viewAdmin();
-      };
-      $('#adm-go').addEventListener('click', go);
-      $('#adm-pw').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  /* ================= 私信 ================= */
+  async function viewMessages() {
+    if (!isLoggedIn()) {
+      app.innerHTML = '<h1 class="page-title">私信</h1>' +
+        empty('🔒', '先登录', '登录后才能收发私信。', '<button class="btn btn-primary" id="m-login">登录 / 注册</button>');
+      $('#m-login').addEventListener('click', () => openAuth('login'));
       return;
     }
-
-    app.innerHTML = '<h1 class="page-title">管理后台</h1><div class="loading">加载中…</div>';
-
-    let reports = [], posts = [];
+    app.innerHTML = '<h1 class="page-title">私信</h1><div id="inbox"><div class="loading">加载中…</div></div>';
+    let list = [];
     try {
-      const res = await Promise.all([
-        adminRest('reports?select=*&order=created_at.desc&limit=30'),
-        adminRest('posts?select=*&order=created_at.desc&limit=30')
-      ]);
-      reports = res[0] || [];
-      posts = res[1] || [];
+      list = await apiRaw('/msg/inbox', { method: 'POST', body: '{}' });
     } catch (e) {
-      sessionStorage.removeItem('gua:admin');
-      app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
-        empty('🔒', '没有权限', esc(e.message) + '<br>口令不对，或者没有配置管理员密钥。',
-          '<a class="btn" href="#/admin">重新输入口令</a>');
+      $('#inbox').innerHTML = empty('📭', '读取失败', esc(e.message), '');
+      return;
+    }
+    if (!list.length) {
+      $('#inbox').innerHTML = empty('📭', '还没有私信', '去别人的主页点「发私信」。', '');
+      return;
+    }
+    $('#inbox').innerHTML = '<div class="card" style="padding:4px 14px">' + list.map(c =>
+      '<a class="dm-row" href="#/messages/' + encodeURIComponent(c.username || '') + '">' +
+        '<span class="avatar" style="--h:' + hue(c.username || '') + '">' + esc((c.username || '?').charAt(0)) + '</span>' +
+        '<span class="dm-main">' +
+          '<span class="dm-top"><b>' + esc(c.username || '未知用户') + '</b><em>' + relTime(c.lastAt) + '</em></span>' +
+          '<span class="dm-last">' + esc(c.last) + '</span>' +
+        '</span>' +
+        (c.unread ? '<span class="dm-badge">' + c.unread + '</span>' : '') +
+      '</a>').join('') + '</div>';
+  }
+
+  async function viewThread(username) {
+    if (!isLoggedIn()) {
+      app.innerHTML = '<h1 class="page-title">私信</h1>' + empty('🔒', '先登录', '登录后才能收发私信。', '');
+      return;
+    }
+    app.innerHTML = '<div class="loading">加载中…</div>';
+    let data;
+    try {
+      data = await apiRaw('/msg/thread', { method: 'POST', body: JSON.stringify({ with: username }) });
+    } catch (e) {
+      app.innerHTML = empty('💬', '打不开这个对话', esc(e.message), '<a class="btn" href="#/messages">回私信列表</a>');
       return;
     }
 
-    const pending = reports.filter(r => r.status === 'pending');
+    const mine = account.id;
+    const bubbles = (data.messages || []).map(m =>
+      '<div class="msg-row ' + (m.from_id === mine ? 'me' : 'them') + '">' +
+        '<div class="msg-bubble">' + esc(m.content) + '</div>' +
+        '<div class="msg-time">' + relTime(m.created_at) + '</div>' +
+      '</div>').join('');
 
-    app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
-      '<div class="admin-bar">' +
-        '<span class="hint">待处理举报 <b style="color:var(--red)">' + pending.length + '</b> · 帖子 ' + posts.length + '</span>' +
-        '<button class="btn btn-sm" id="adm-exit">退出管理</button>' +
+    app.innerHTML =
+      '<a class="back-link" href="#/messages">← 私信</a>' +
+      '<div class="dm-head">' +
+        '<span class="avatar" style="--h:' + hue(data.other.username) + '">' + esc(data.other.username.charAt(0)) + '</span>' +
+        '<a class="dm-name" href="#/u/' + encodeURIComponent(data.other.username) + '">' + esc(data.other.username) + '</a>' +
       '</div>' +
-      '<div class="notice" style="margin:0 0 16px">如果下面列表一直是空的，通常是 Netlify 里还没配 <code>SUPABASE_SERVICE_KEY</code>，或者口令不对。</div>' +
-      '<h3 class="section-title">举报</h3>' +
-      (pending.length
-        ? '<div class="card" style="padding:4px 14px">' + pending.map(r =>
-            '<div class="adm-row">' +
-              '<div class="adm-main">' +
-                '<div class="adm-title">' + esc(REASON_LABEL[r.reason] || r.reason) + '</div>' +
-                '<div class="adm-sub">' + esc(r.target_type) + ' · ' + relTime(r.created_at) + '</div>' +
-              '</div>' +
-              '<button class="act" data-adm-del="' + (r.target_type === 'comment' ? 'comment' : 'post') + ':' + esc(r.target_id) + '">删内容</button>' +
-              '<button class="act" data-adm-ignore="' + esc(r.id) + '">忽略</button>' +
-            '</div>').join('') + '</div>'
-        : '<div class="hint" style="padding:4px 0 8px">没有待处理的举报</div>') +
-      '<h3 class="section-title">最新帖子</h3>' +
-      (posts.length
-        ? '<div class="card" style="padding:4px 14px">' + posts.map(p =>
-            '<div class="adm-row">' +
-              '<div class="adm-main">' +
-                '<div class="adm-title">' + esc(p.title) + '</div>' +
-                '<div class="adm-sub">' + esc(p.author_alias) + ' · ' + relTime(p.created_at) + ' · 🍉 ' + (p.melon || 0) + '</div>' +
-              '</div>' +
-              '<button class="act" data-adm-del="post:' + esc(p.id) + '">删除</button>' +
-            '</div>').join('') + '</div>'
-        : '<div class="hint">还没有帖子</div>');
+      '<div class="msg-list" id="msg-list">' + (bubbles || '<div class="hint" style="padding:20px 0">还没有消息，说点什么吧。</div>') + '</div>' +
+      '<div class="msg-input">' +
+        '<textarea class="input" id="dm-text" rows="1" maxlength="500" placeholder="发消息…"></textarea>' +
+        '<button class="btn btn-primary btn-sm" id="dm-send">发送</button>' +
+      '</div>';
 
-    $('#adm-exit').addEventListener('click', () => {
-      sessionStorage.removeItem('gua:admin');
-      toast('已退出管理');
-      location.hash = '#/me';
+    const box = $('#msg-list');
+    box.scrollTop = box.scrollHeight;
+
+    const send = async () => {
+      const el = $('#dm-text');
+      const v = el.value.trim();
+      if (!v) return;
+      const btn = $('#dm-send');
+      btn.disabled = true;
+      try {
+        await apiRaw('/msg/send', { method: 'POST', body: JSON.stringify({ to: data.other.username, content: v }) });
+        el.value = '';
+        viewThread(data.other.username);
+      } catch (e) {
+        toast('发送失败：' + e.message);
+      } finally { btn.disabled = false; }
+    };
+    $('#dm-send').addEventListener('click', send);
+    $('#dm-text').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
   }
-
   /* ================= 示例数据 ================= */
   const DEMO = [
     { title:'下学期起周三下午不再排课，留给社团活动', content:'教务处通知：从下学期开始，周三下午 14:00–17:00 全校不排课，用于社团活动和体育俱乐部。具体安排开学前发到各学院。', category:'news', credibility:'confirmed', school:'示例大学 · 教务处', tags:['教务','社团'], hours:4 },
@@ -1547,6 +1628,10 @@ select.input{appearance:none}
     if (head === 'new')         return viewNew();
     if (head === 'search')      return viewSearch();
     if (head === 'me')          return viewMe();
+    if (head === 'u' && parts[1]) return viewUser(decodeURIComponent(parts[1]));
+    if (head === 'messages') {
+      return parts[1] ? viewThread(decodeURIComponent(parts[1])) : viewMessages();
+    }
     if (head === 'admin')       return viewAdmin();
 
     app.innerHTML = empty('🫥', '页面不存在', '链接可能不对。', '<a class="btn" href="#/">回首页</a>');
