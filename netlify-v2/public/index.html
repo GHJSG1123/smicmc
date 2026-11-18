@@ -501,6 +501,11 @@ select.input{appearance:none}
 .side-user .avatar{width:26px;height:26px;font-size:12px}
 .side-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+/* 头像可点 */
+.avatar-link{display:inline-flex;align-items:center;flex-shrink:0}
+.avatar-link:hover .avatar{filter:brightness(1.15)}
+a.alias:hover{color:#fff}
+
 </style>
 </head>
 <body>
@@ -519,7 +524,6 @@ select.input{appearance:none}
   <div class="topbar-right">
     <button class="link-btn" id="btn-login">登录</button>
     <button class="btn btn-outline btn-sm" id="btn-register">注册</button><a class="user-chip hidden" id="user-chip" href="#/me" title="我的"></a>
-    <a class="user-chip hidden" id="user-chip" href="#/me" title="我的"></a>
     <a class="btn btn-primary btn-sm" href="#/new">+ 发布</a>
   </div>
 </header>
@@ -529,7 +533,6 @@ select.input{appearance:none}
 <div class="layout">
 
   <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a>
-    <a class="side-user hidden" id="side-user" href="#/me"></a>
     <a href="#/" data-nav="feed"><span class="nav-ico">🏠</span>首页</a>
     <a href="#/hot" data-nav="hot"><span class="nav-ico">🔥</span>热榜</a>
     <a href="#/new" data-nav="new"><span class="nav-ico">✍️</span>发布</a>
@@ -882,9 +885,9 @@ select.input{appearance:none}
     const voted = !!localStorage.getItem(melonKey(p.id));
     const strike = p.credibility === 'debunked' ? ' style="text-decoration:line-through;opacity:.55"' : '';
     return '<article class="card" data-id="' + esc(p.id) + '">' +
-      '<div class="card-head">' + avatar(p.author_alias) +
+      '<div class="card-head"><a class="avatar-link" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + avatar(p.author_alias) + '</a>' +
         '<div class="card-meta">' +
-          '<span class="alias">' + esc(p.author_alias) + '</span>' +
+          '<a class="alias" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + esc(p.author_alias) + '</a>' +
           '<span>·</span><span>' + relTime(p.created_at) + '</span>' +
           (p.school ? '<span>·</span><span>' + esc(p.school) + '</span>' : '') +
         '</div>' +
@@ -1105,7 +1108,7 @@ select.input{appearance:none}
     app.innerHTML =
       '<a class="back-link" href="#/">← 返回</a>' +
       '<article class="detail" data-id="' + esc(p.id) + '">' +
-        '<div class="card-head">' + avatar(p.author_alias) +
+        '<div class="card-head"><a class="avatar-link" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + avatar(p.author_alias) + '</a>' +
           '<div class="card-meta"><span class="alias">' + esc(p.author_alias) + '</span>' +
           '<span>·</span><span>' + relTime(p.created_at) + '</span></div>' +
           '<span style="margin-left:auto">' + badge(p.credibility) + '</span>' +
@@ -1373,7 +1376,6 @@ select.input{appearance:none}
       (isMe
         ? '<div class="menu-list">' +
             '<a class="menu-item" href="#/messages">私信<span class="arrow">›</span></a>' +
-            '<a class="menu-item" href="#/admin">管理后台<span class="arrow">›</span></a>' +
             '<button class="menu-item" id="p-logout">退出登录<span class="arrow">›</span></button>' +
           '</div>'
         : '') +
@@ -1512,6 +1514,100 @@ select.input{appearance:none}
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
   }
+  /* ================= 管理后台 ================= */
+  const REASON_LABEL = { privacy:'侵犯隐私', attack:'人身攻击', rumor:'造谣', nsfw:'色情低俗', spam:'广告', other:'其他' };
+
+  async function adminRest(path, opts) {
+    const pw = sessionStorage.getItem('gua:admin') || '';
+    const o = opts || {};
+    return rest(path, Object.assign({}, o, {
+      headers: Object.assign({ 'x-admin-key': pw }, o.headers || {})
+    }));
+  }
+
+  async function viewAdmin() {
+    const pw = sessionStorage.getItem('gua:admin');
+
+    if (!pw) {
+      app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
+        '<div class="form">' +
+          '<div class="field"><label>管理口令</label>' +
+            '<input class="input" id="adm-pw" type="password" placeholder="输入口令" autocomplete="off" />' +
+          '</div>' +
+          '<button class="btn btn-primary btn-block" id="adm-go">进入</button>' +
+        '</div>';
+      const go = () => {
+        const v = $('#adm-pw').value.trim();
+        if (!v) return;
+        sessionStorage.setItem('gua:admin', v);
+        viewAdmin();
+      };
+      $('#adm-go').addEventListener('click', go);
+      $('#adm-pw').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+      return;
+    }
+
+    app.innerHTML = '<h1 class="page-title">管理后台</h1><div class="loading">加载中…</div>';
+
+    let reports = [], posts = [];
+    try {
+      const res = await Promise.all([
+        adminRest('reports?select=*&order=created_at.desc&limit=50'),
+        adminRest('posts?select=*&order=created_at.desc&limit=50')
+      ]);
+      reports = res[0] || [];
+      posts = res[1] || [];
+    } catch (e) {
+      sessionStorage.removeItem('gua:admin');
+      app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
+        empty('🔒', '没有权限', esc(e.message), '<a class="btn" href="#/admin">重新输入口令</a>');
+      return;
+    }
+
+    const pending = reports.filter(r => r.status === 'pending');
+    const visible = posts.filter(p => p.status !== 'hidden');
+
+    app.innerHTML = '<h1 class="page-title">管理后台</h1>' +
+      '<div class="admin-bar">' +
+        '<span class="hint">待处理举报 <b style="color:var(--red)">' + pending.length + '</b>' +
+        ' · 帖子 ' + visible.length + ' · 已隐藏 ' + (posts.length - visible.length) + '</span>' +
+        '<button class="btn btn-sm" id="adm-exit">退出管理</button>' +
+      '</div>' +
+
+      '<h3 class="section-title">举报</h3>' +
+      (pending.length
+        ? '<div class="card" style="padding:4px 14px">' + pending.map(r =>
+            '<div class="adm-row">' +
+              '<div class="adm-main">' +
+                '<div class="adm-title">' + esc(REASON_LABEL[r.reason] || r.reason) + '</div>' +
+                '<div class="adm-sub">' + esc(r.target_type) + ' · ' + relTime(r.created_at) + '</div>' +
+              '</div>' +
+              '<button class="act" data-adm-del="' + (r.target_type === 'comment' ? 'comment' : 'post') + ':' + esc(r.target_id) + '">删内容</button>' +
+              '<button class="act" data-adm-ignore="' + esc(r.id) + '">忽略</button>' +
+            '</div>').join('') + '</div>'
+        : '<div class="hint" style="padding:4px 0 8px">没有待处理的举报</div>') +
+
+      '<h3 class="section-title">帖子</h3>' +
+      (posts.length
+        ? '<div class="card" style="padding:4px 14px">' + posts.map(p =>
+            '<div class="adm-row">' +
+              '<div class="adm-main">' +
+                '<div class="adm-title">' + (p.status === 'hidden' ? '【已隐藏】' : '') + esc(p.title) + '</div>' +
+                '<div class="adm-sub">' + esc(p.author_alias) + ' · ' + relTime(p.created_at) + ' · 🍉 ' + (p.melon || 0) + '</div>' +
+              '</div>' +
+              (p.status === 'hidden'
+                ? '<button class="act" data-adm-show="' + esc(p.id) + '">恢复</button>'
+                : '<button class="act" data-adm-hide="' + esc(p.id) + '">隐藏</button>') +
+              '<button class="act" data-adm-del="post:' + esc(p.id) + '">删除</button>' +
+            '</div>').join('') + '</div>'
+        : '<div class="hint">还没有帖子</div>');
+
+    $('#adm-exit').addEventListener('click', () => {
+      sessionStorage.removeItem('gua:admin');
+      toast('已退出管理');
+      location.hash = '#/';
+    });
+  }
   /* ================= 示例数据 ================= */
   const DEMO = [
     { title:'下学期起周三下午不再排课，留给社团活动', content:'教务处通知：从下学期开始，周三下午 14:00–17:00 全校不排课，用于社团活动和体育俱乐部。具体安排开学前发到各学院。', category:'news', credibility:'confirmed', school:'示例大学 · 教务处', tags:['教务','社团'], hours:4 },
@@ -1560,7 +1656,13 @@ select.input{appearance:none}
       if (!rows || !rows.length) { localStorage.setItem(melonKey(id), '1'); return toast('已经吃过了'); }
     } catch (e) { return toast('操作失败：' + e.message); }
 
-    try { await rest('rpc/add_melon', { method: 'POST', body: JSON.stringify({ p_post_id: id }) }); } catch (e) {}
+    try {
+      await rest('rpc/add_melon', { method: 'POST', body: JSON.stringify({ p_post_id: id }) });
+    } catch (e) {
+      localStorage.removeItem(melonKey(id));
+      toast('点赞失败：' + e.message);
+      return;
+    }
     localStorage.setItem(melonKey(id), '1');
 
     const span = btn.querySelector('[data-melon]');
@@ -1571,6 +1673,33 @@ select.input{appearance:none}
 
   /* ================= 事件 ================= */
   document.addEventListener('click', async e => {
+    const admHide = e.target.closest('[data-adm-hide]');
+    if (admHide) {
+      try {
+        await adminRest('posts?id=eq.' + admHide.dataset.admHide, {
+          method: 'PATCH', headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify({ status: 'hidden' })
+        });
+        toast('已隐藏');
+        S.loaded = false;
+        viewAdmin();
+      } catch (err) { toast('操作失败：' + err.message); }
+      return;
+    }
+
+    const admShow = e.target.closest('[data-adm-show]');
+    if (admShow) {
+      try {
+        await adminRest('posts?id=eq.' + admShow.dataset.admShow, {
+          method: 'PATCH', headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify({ status: 'published' })
+        });
+        toast('已恢复');
+        S.loaded = false;
+        viewAdmin();
+      } catch (err) { toast('操作失败：' + err.message); }
+      return;
+    }
     const admDel = e.target.closest('[data-adm-del]');
     if (admDel) {
       const parts = admDel.dataset.admDel.split(':');
