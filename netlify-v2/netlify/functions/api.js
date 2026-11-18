@@ -30,6 +30,7 @@ exports.handler = async function (event) {
 
   /* 个人空间 / 私信 */
   if (path === '/user/get')    return handleUserGet(event);
+  if (path === '/user/me')     return handleUserMe(event);
   if (path === '/user/update') return handleUserUpdate(event);
   if (path === '/msg/send')    return handleMsgSend(event);
   if (path === '/msg/inbox')   return handleMsgInbox(event);
@@ -165,12 +166,12 @@ async function handleAuth(isRegister, event) {
       });
       const row = created && created[0];
       if (!row) return json(500, { message: '注册失败，请重试' });
-      return json(200, { id: row.id, username: row.username, token: makeToken(row.id) });
+      return json(200, { id: row.id, username: row.username, token: makeToken(row.id, row.username) });
     }
 
     if (!exist) return json(401, { message: '用户名或密码不对' });
     if (exist.pass_hash !== hashPass(username, password)) return json(401, { message: '用户名或密码不对' });
-    return json(200, { id: exist.id, username: exist.username, token: makeToken(exist.id) });
+    return json(200, { id: exist.id, username: exist.username, token: makeToken(exist.id, exist.username) });
   } catch (err) {
     const msg = String(err.message || '');
     if (msg.indexOf('duplicate') >= 0 || msg.indexOf('23505') >= 0) {
@@ -188,8 +189,8 @@ async function handleAuth(isRegister, event) {
    ===================================================================== */
 const TOKEN_TTL = 30 * 24 * 3600 * 1000;
 
-function makeToken(uid) {
-  const payload = Buffer.from(JSON.stringify({ u: uid, x: Date.now() + TOKEN_TTL })).toString('base64url');
+function makeToken(uid, name) {
+  const payload = Buffer.from(JSON.stringify({ u: uid, n: name || '', x: Date.now() + TOKEN_TTL })).toString('base64url');
   const sig = crypto.createHmac('sha256', PEPPER).update(payload).digest('base64url');
   return payload + '.' + sig;
 }
@@ -203,7 +204,7 @@ function verifyToken(tok) {
   try {
     const o = JSON.parse(Buffer.from(payload, 'base64url').toString());
     if (!o.u || !o.x || o.x < Date.now()) return null;
-    return o.u;
+    return o;
   } catch (e) { return null; }
 }
 
@@ -212,7 +213,8 @@ function bearer(event) {
   return String(h).replace(/^Bearer\s+/i, '').trim();
 }
 
-function authUid(event) { return verifyToken(bearer(event)); }
+function authUid(event) { const o = verifyToken(bearer(event)); return o ? o.u : null; }
+function authInfo(event) { return verifyToken(bearer(event)); }
 
 function readBody(event) {
   try { return JSON.parse(event.body || '{}'); } catch (e) { return null; }
@@ -345,6 +347,58 @@ async function handleMsgThread(event) {
     } catch (e) {}
 
     return json(200, { other: { id: other.id, username: other.username }, messages: msgs || [] });
+  } catch (err) {
+    return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 自己的资料（按登录身份取，查不到就补一条） ---------------- */
+async function handleUserMe(event) {
+  const info = authInfo(event);
+  if (!info) return json(401, { message: '请先登录' });
+
+  try {
+    let p = null;
+
+    const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at');
+    p = byId && byId[0];
+
+    if (!p && info.n) {
+      const byName = await sb('profiles?username=eq.' + encodeURIComponent(info.n) + '&select=id,username,bio,tags,created_at');
+      p = byName && byName[0];
+    }
+
+    if (!p) {
+      try {
+        const created = await sb('profiles', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: info.u,
+            username: info.n || ('用户' + String(info.u).slice(0, 6)),
+            pass_hash: '!'
+          })
+        });
+        p = created && created[0];
+      } catch (e) {}
+
+      if (!p) {
+        const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at');
+        p = again && again[0];
+      }
+    }
+
+    if (!p) return json(404, { message: '资料还没建好，刷新一次再试' });
+
+    let postCount = 0;
+    try {
+      const posts = await sb('posts?author_id=eq.' + p.id + '&select=id&limit=1000');
+      postCount = (posts || []).length;
+    } catch (e) {}
+
+    return json(200, {
+      id: p.id, username: p.username, bio: p.bio || '',
+      tags: p.tags || [], created_at: p.created_at, postCount: postCount
+    });
   } catch (err) {
     return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
   }

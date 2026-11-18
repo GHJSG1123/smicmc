@@ -506,6 +506,13 @@ select.input{appearance:none}
 .avatar-link:hover .avatar{filter:brightness(1.15)}
 a.alias:hover{color:#fff}
 
+.side-logout{
+  display:block;width:100%;text-align:left;
+  padding:8px 10px;margin:0 0 6px;border-radius:9px;
+  font-size:13px;color:var(--dim);
+}
+.side-logout:hover{background:rgba(255,255,255,.05);color:var(--fg)}
+
 </style>
 </head>
 <body>
@@ -532,7 +539,7 @@ a.alias:hover{color:#fff}
 
 <div class="layout">
 
-  <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a>
+  <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a><button class="side-logout hidden" id="side-logout">退出登录</button>
     <a href="#/" data-nav="feed"><span class="nav-ico">🏠</span>首页</a>
     <a href="#/hot" data-nav="hot"><span class="nav-ico">🔥</span>热榜</a>
     <a href="#/new" data-nav="new"><span class="nav-ico">✍️</span>发布</a>
@@ -741,7 +748,13 @@ a.alias:hover{color:#fff}
     const text = await res.text();
     let data = null;
     if (text) { try { data = JSON.parse(text); } catch (e) { data = text; } }
-    if (!res.ok) throw new Error((data && data.message) || ('HTTP ' + res.status));
+    if (!res.ok) {
+      if (res.status === 401 && (path.indexOf('/user/') === 0 || path.indexOf('/msg/') === 0)) {
+        saveAccount(null);
+        toast('登录已过期，请重新登录');
+      }
+      throw new Error((data && data.message) || ('HTTP ' + res.status));
+    }
     return data;
   }
 
@@ -794,6 +807,9 @@ a.alias:hover{color:#fff}
       if (regBtn) regBtn.classList.remove('hidden');
       if (side) side.classList.add('hidden');
     }
+
+    const outBtn = $('#side-logout');
+    if (outBtn) outBtn.classList.toggle('hidden', !isLoggedIn());
   }
 
   /* ================= 本地身份 ================= */
@@ -1004,6 +1020,12 @@ a.alias:hover{color:#fff}
 
 
 
+  const sideOut = $('#side-logout');
+  if (sideOut) sideOut.addEventListener('click', () => {
+    signOut();
+    toast('已退出登录');
+    location.hash = '#/';
+  });
   const btnLogin = $('#btn-login');
   if (btnLogin) btnLogin.addEventListener('click', () => openAuth('login'));
   const btnRegister = $('#btn-register');
@@ -1340,10 +1362,21 @@ a.alias:hover{color:#fff}
   /* ================= 个人空间 ================= */
   async function viewUser(username) {
     app.innerHTML = '<div class="loading">加载中…</div>';
+    const selfView = isLoggedIn() && account.username === username;
     let p;
     try {
-      p = await apiRaw('/user/get', { method: 'POST', body: JSON.stringify({ username: username }) });
+      p = selfView
+        ? await apiRaw('/user/me', { method: 'POST', body: '{}' })
+        : await apiRaw('/user/get', { method: 'POST', body: JSON.stringify({ username: username }) });
     } catch (e) {
+      if (!isLoggedIn()) {
+        app.innerHTML = '<h1 class="page-title">我的</h1>' +
+          empty('👤', '登录已失效', '请重新登录（改了后台口令后，旧的登录状态会全部作废）',
+            '<button class="btn btn-primary" id="relogin">重新登录</button>');
+        const b = $('#relogin');
+        if (b) b.addEventListener('click', () => openAuth('login'));
+        return;
+      }
       app.innerHTML = empty('👤', '找不到这个用户', esc(e.message), '<a class="btn" href="#/">回首页</a>');
       return;
     }
