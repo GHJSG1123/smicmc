@@ -513,6 +513,20 @@ a.alias:hover{color:#fff}
 }
 .side-logout:hover{background:rgba(255,255,255,.05);color:var(--fg)}
 
+/* ---------------- 图片 ---------------- */
+.card-imgs{display:flex;gap:6px;margin-top:10px}
+.card-imgs img{width:82px;height:82px;object-fit:cover;border-radius:8px;border:1px solid var(--border)}
+.detail-imgs{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+.detail-imgs img{width:100%;max-height:440px;object-fit:contain;border-radius:10px;border:1px solid var(--border);background:#000}
+.img-previews{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.img-preview{position:relative;width:86px;height:86px;border-radius:8px;overflow:hidden;border:1px solid var(--border)}
+.img-preview img{width:100%;height:100%;object-fit:cover;display:block}
+.img-del{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:13px;line-height:1;display:grid;place-items:center}
+.comment-acts{display:flex;gap:6px;margin-top:6px}
+.mini{font-size:11.5px;color:var(--dim);padding:2px 7px;border-radius:5px}
+.mini:hover{background:rgba(255,255,255,.07);color:var(--fg)}
+.reply-bar{font-size:12.5px;color:var(--muted);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-bottom:8px}
+
 </style>
 </head>
 <body>
@@ -631,6 +645,28 @@ a.alias:hover{color:#fff}
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 
+  function readImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const max = 900;
+        let w = img.width, h = img.height;
+        if (w > max || h > max) {
+          const k = Math.min(max / w, max / h);
+          w = Math.round(w * k); h = Math.round(h * k);
+        }
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(cv.toDataURL('image/jpeg', 0.7));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+      img.src = url;
+    });
+  }
+
   function relTime(iso) {
     const d = Date.now() - new Date(iso).getTime();
     if (d < 0) return '刚刚';
@@ -736,6 +772,7 @@ a.alias:hover{color:#fff}
     try {
       const h = { 'Content-Type': 'application/json' };
       if (account && account.token) h.Authorization = 'Bearer ' + account.token;
+      if (staff && staff.token) h['x-staff'] = staff.token;
       res = await fetch(SB + path, {
         method: o.method || 'GET',
         headers: h,
@@ -775,6 +812,21 @@ a.alias:hover{color:#fff}
     saveAccount({ id: r.id, username: r.username, token: r.token });
     return r;
   }
+
+  /* 保安 / 管理员身份 */
+  let staff = null;
+  try { staff = JSON.parse(localStorage.getItem('gua:staff') || 'null'); } catch (e) { staff = null; }
+
+  function saveStaff(s) {
+    staff = s;
+    if (s) localStorage.setItem('gua:staff', JSON.stringify(s));
+    else localStorage.removeItem('gua:staff');
+    paintUserChip();
+  }
+  const isStaff = () => !!(staff && staff.token);
+  const canDeletePost = p => isStaff() || (isLoggedIn() && p.author_id && p.author_id === account.id);
+  const canDeleteComment = cm => isStaff() || (isLoggedIn() && cm.author_id && cm.author_id === account.id);
+  let replyParent = null;
 
   function signOut() { saveAccount(null); }
   function isLoggedIn() { return !!(account && account.id); }
@@ -911,12 +963,14 @@ a.alias:hover{color:#fff}
       '</div>' +
       '<h2 class="card-title"><a href="#/p/' + esc(p.id) + '"><span' + strike + '>' + esc(p.title) + '</span></a></h2>' +
       '<p class="excerpt">' + esc(p.content) + '</p>' +
+      (p.images && p.images.length ? '<div class="card-imgs">' + p.images.slice(0, 3).map(function (src) { return '<img src="' + src + '" alt="" />'; }).join('') + '</div>' : '') +
       '<div class="card-tags"><span class="tag">' + esc(CAT_LABEL[p.category] || '其他') + '</span>' +
         (p.tags || []).slice(0, 3).map(t => '<span class="tag">#' + esc(t) + '</span>').join('') +
       '</div>' +
       '<div class="card-actions">' +
         '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
         '<a class="act" href="#/p/' + esc(p.id) + '">💬 ' + n + '</a>' +
+        (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
         '<button class="act" data-act="report" style="margin-left:auto">举报</button>' +
       '</div>' +
     '</article>';
@@ -955,71 +1009,88 @@ a.alias:hover{color:#fff}
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
-  /* ================= 登录 / 注册（用户名 + 密码） ================= */
+  /* ================= 登录 / 注册 / 保安 / 管理员 ================= */
   function openAuth(mode) {
     let tab = mode || 'login';
-    const body = () => `
-      <div class="auth-tabs">
-        <button class="auth-tab ${tab === 'login' ? 'on' : ''}" data-auth-tab="login">登录</button>
-        <button class="auth-tab ${tab === 'signup' ? 'on' : ''}" data-auth-tab="signup">注册</button>
-      </div>
-      <div id="auth-msg"></div>
-      <div class="auth-field">
-        <label>用户名</label>
-        <input class="input" id="a-user" maxlength="16" placeholder="2–16 个字，登录和发帖都用它" autocomplete="username" />
-      </div>
-      <div class="auth-field">
-        <label>密码</label>
-        <input class="input" id="a-pass" type="password" placeholder="${tab === 'signup' ? '至少 6 位' : '你的密码'}" autocomplete="${tab === 'signup' ? 'new-password' : 'current-password'}" />
-      </div>
-      <button class="btn btn-primary btn-block" id="a-submit" style="margin-top:6px">
-        ${tab === 'login' ? '登录' : '注册账号'}
-      </button>
-      <div class="auth-foot">
-        ${tab === 'login'
-          ? '还没有账号？点上面的「注册」。'
-          : '不用邮箱，注册完直接登录。'}
-      </div>`;
+
+    const TABS_AUTH = [
+      { id: 'login', label: '登录' },
+      { id: 'signup', label: '注册' },
+      { id: 'guard', label: '我是保安' },
+      { id: 'admin', label: '我是管理员' }
+    ];
+
+    const body = () => {
+      const staffTab = (tab === 'guard' || tab === 'admin');
+      return '<div class="auth-tabs">' +
+          TABS_AUTH.map(t => '<button class="auth-tab' + (tab === t.id ? ' on' : '') + '" data-auth-tab="' + t.id + '">' + t.label + '</button>').join('') +
+        '</div>' +
+        '<div id="auth-msg"></div>' +
+        (staffTab
+          ? '<div class="auth-field"><label>' + (tab === 'guard' ? '保安码' : '管理口令') + '</label>' +
+              '<input class="input" id="a-code" type="password" placeholder="' + (tab === 'guard' ? '输入保安码' : '输入管理口令') + '" autocomplete="off" /></div>' +
+            '<button class="btn btn-primary btn-block" id="a-submit">进入</button>' +
+            '<div class="auth-foot">' + (tab === 'guard' ? '保安可以删除任何帖子和评论' : '管理员拥有全部权限') + '</div>'
+          : '<div class="auth-field"><label>用户名</label>' +
+              '<input class="input" id="a-user" maxlength="16" placeholder="2–16 个字" autocomplete="username" /></div>' +
+            '<div class="auth-field"><label>密码</label>' +
+              '<input class="input" id="a-pass" type="password" placeholder="' + (tab === 'signup' ? '至少 6 位' : '你的密码') + '" /></div>' +
+            '<button class="btn btn-primary btn-block" id="a-submit">' + (tab === 'login' ? '登录' : '注册账号') + '</button>' +
+            '<div class="auth-foot">' + (tab === 'login' ? '没有账号？点上面的「注册」。' : '不用邮箱，注册完直接登录。') + '</div>');
+    };
 
     openModal(body());
 
     const submit = async () => {
-      const username = $('#a-user').value.trim();
-      const pass = $('#a-pass').value;
       const msg = $('#auth-msg');
       const fail = m => { msg.innerHTML = '<div class="auth-alert">' + esc(m) + '</div>'; };
-
-      if (username.length < 2) return fail('用户名至少 2 个字');
-      if (pass.length < 6) return fail('密码至少 6 位');
-
       const btn = $('#a-submit');
       btn.disabled = true;
       btn.textContent = '处理中…';
+
       try {
+        if (tab === 'guard' || tab === 'admin') {
+          const code = $('#a-code').value.trim();
+          if (!code) throw new Error('请输入' + (tab === 'guard' ? '保安码' : '管理口令'));
+          const r = await apiRaw('/staff/login', {
+            method: 'POST',
+            body: JSON.stringify({ kind: tab, code: code })
+          });
+          saveStaff({ kind: r.kind, token: r.token });
+          closeModal();
+          toast(r.kind === 'guard' ? '保安模式已开启' : '管理员模式已开启');
+          route();
+          return;
+        }
+
+        const username = $('#a-user').value.trim();
+        const pass = $('#a-pass').value;
+        if (username.length < 2) throw new Error('用户名至少 2 个字');
+        if (pass.length < 6) throw new Error('密码至少 6 位');
+
         if (tab === 'login') {
           await doLogin(username, pass);
           closeModal();
           toast('欢迎回来，' + nick());
-          route();
         } else {
           await doRegister(username, pass);
           closeModal();
           toast('注册成功，已登录');
-          route();
         }
+        route();
       } catch (e) {
         fail(e.message);
         btn.disabled = false;
-        btn.textContent = tab === 'login' ? '登录' : '注册账号';
+        btn.textContent = (tab === 'guard' || tab === 'admin') ? '进入' : (tab === 'login' ? '登录' : '注册账号');
       }
     };
 
     $('#a-submit').addEventListener('click', submit);
-    $('#a-pass').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    const codeEl = $('#a-code');
+    if (codeEl) codeEl.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    const passEl = $('#a-pass');
+    if (passEl) passEl.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   }
-
-
-
   const sideOut = $('#side-logout');
   if (sideOut) sideOut.addEventListener('click', () => {
     signOut();
@@ -1137,6 +1208,7 @@ a.alias:hover{color:#fff}
         '</div>' +
         '<h1>' + esc(p.title) + '</h1>' + debunk + warn +
         '<div class="detail-body">' + esc(p.content) + '</div>' +
+        (p.images && p.images.length ? '<div class="detail-imgs">' + p.images.map(function (src) { return '<img src="' + src + '" alt="" />'; }).join('') + '</div>' : '') +
         '<div class="card-tags" style="margin-top:16px">' +
           '<span class="tag">' + esc(CAT_LABEL[p.category] || '其他') + '</span>' +
           (p.school ? '<span class="tag">' + esc(p.school) + '</span>' : '') +
@@ -1144,12 +1216,14 @@ a.alias:hover{color:#fff}
         '</div>' +
         '<div class="card-actions">' +
           '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
+          (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
           '<button class="act" data-act="report">举报</button>' +
         '</div>' +
       '</article>' +
       '<h3 class="section-title">评论 <span class="hint" id="c-count"></span></h3>' +
       '<div id="comments"><div class="loading">加载中…</div></div>' +
       '<div class="form comment-form">' +
+        '<div id="reply-bar" class="reply-bar hidden"></div>' +
         '<textarea class="input" id="c-input" rows="3" placeholder="说点什么…（' + esc(nick() || alias()) + '）"></textarea>' +
         '<div class="row spread" style="margin-top:10px">' +
           '<span class="hint">请勿人身攻击或泄露他人隐私</span>' +
@@ -1169,9 +1243,12 @@ a.alias:hover{color:#fff}
       try {
         await apiRaw('/comment/create', {
           method: 'POST',
-          body: JSON.stringify({ post_id: p.id, content: val, author_alias: nick() || alias() })
+          body: JSON.stringify({ post_id: p.id, parent_id: replyParent ? replyParent.id : null, content: val, author_alias: nick() || alias() })
         });
         el.value = '';
+        replyParent = null;
+        const rb = $('#reply-bar');
+        if (rb) { rb.classList.add('hidden'); rb.innerHTML = ''; }
         toast('评论已发布');
         loadComments(p.id);
       } catch (e) { toast('发布失败：' + e.message); }
@@ -1199,11 +1276,19 @@ a.alias:hover{color:#fff}
           '<div class="comment-head"><span class="alias">' + esc(c.author_alias) + '</span>' +
           '<span>·</span><span>' + relTime(c.created_at) + '</span></div>' +
           '<div class="comment-body">' + esc(c.content) + '</div>' +
+          '<div class="comment-acts">' +
+            '<button class="mini" data-act="reply" data-id="' + esc(c.id) + '" data-alias="' + esc(c.author_alias) + '">回复</button>' +
+            (canDeleteComment(c) ? '<button class="mini" data-act="del-comment" data-id="' + esc(c.id) + '">删除</button>' : '') +
+          '</div>' +
           (replies.length ? '<div class="replies">' + replies.map(r =>
             '<div class="comment">' + avatar(r.author_alias) +
             '<div class="comment-main"><div class="comment-head"><span class="alias">' + esc(r.author_alias) + '</span>' +
             '<span>·</span><span>' + relTime(r.created_at) + '</span></div>' +
-            '<div class="comment-body">' + esc(r.content) + '</div></div></div>').join('') + '</div>' : '') +
+            '<div class="comment-body">' + esc(r.content) + '</div>' +
+            '<div class="comment-acts">' +
+              '<button class="mini" data-act="reply" data-id="' + esc(c.id) + '" data-alias="' + esc(r.author_alias) + '">回复</button>' +
+              (canDeleteComment(r) ? '<button class="mini" data-act="del-comment" data-id="' + esc(r.id) + '">删除</button>' : '') +
+            '</div></div></div>').join('') + '</div>' : '') +
         '</div></div>';
     }).join('');
   }
@@ -1235,6 +1320,9 @@ a.alias:hover{color:#fff}
           '<input class="input" id="f-title" maxlength="40" placeholder="一句话说清这条瓜" /></div>' +
         '<div class="field"><label>正文<span class="counter" id="c-body">0/1000</span></label>' +
           '<textarea class="input" id="f-body" maxlength="1000" placeholder="时间、地点、经过。不确定的地方请写明「听说」，不要编造细节。"></textarea></div>' +
+        '<div class="field"><label>图片 <span class="hint">最多 3 张，自动压缩</span></label>' +
+          '<input type="file" id="f-img" accept="image/*" multiple class="input" style="padding:9px" />' +
+          '<div id="f-imgs" class="img-previews"></div></div>' +
         '<div class="field"><label>显示名字</label>' +
           '<input class="input" id="f-alias" maxlength="20" value="' + esc(who) + '" /></div>' +
         '<div class="field"><label class="check"><input type="checkbox" id="f-promise" />' +
@@ -1261,6 +1349,32 @@ a.alias:hover{color:#fff}
     $('#f-title').addEventListener('input', e => { $('#c-title').textContent = e.target.value.length + '/40'; });
     $('#f-body').addEventListener('input', e => { $('#c-body').textContent = e.target.value.length + '/1000'; });
 
+    const picked = [];
+    const renderPicked = () => {
+      const box = $('#f-imgs');
+      if (!box) return;
+      box.innerHTML = picked.map((src, i) =>
+        '<div class="img-preview"><img src="' + src + '" alt="" /><button class="img-del" data-idx="' + i + '">×</button></div>'
+      ).join('');
+      box.querySelectorAll('.img-del').forEach(b => {
+        b.addEventListener('click', () => {
+          picked.splice(parseInt(b.dataset.idx, 10), 1);
+          renderPicked();
+        });
+      });
+    };
+
+    const imgInput = $('#f-img');
+    if (imgInput) {
+      imgInput.addEventListener('change', async ev => {
+        const files = Array.from(ev.target.files || []).slice(0, 3 - picked.length);
+        for (const f of files) {
+          try { picked.push(await readImage(f)); } catch (e) { toast('这张图读不了'); }
+        }
+        ev.target.value = '';
+        renderPicked();
+      });
+    }
     $('#f-send').addEventListener('click', async () => {
       const err = $('#f-err');
       const show = m => { err.textContent = m; err.classList.add('show'); };
@@ -1281,7 +1395,7 @@ a.alias:hover{color:#fff}
       const payload = {
         title: title, content: body,
         category: getCat(), credibility: getCred(),
-        school: school || null, tags: [], images: [],
+        school: school || null, tags: [], images: picked,
         author_alias: who, status: 'published'
       };
       if (isLoggedIn() && S.hasAuthorId) payload.author_id = account.id;
@@ -1760,6 +1874,50 @@ a.alias:hover{color:#fff}
     const seedBtn = e.target.closest('[data-seed]');
     if (seedBtn) return seedDemo(seedBtn);
 
+    const delPostBtn = e.target.closest('[data-act="del-post"]');
+    if (delPostBtn) {
+      if (!confirm('删除这条帖子？删除后不可恢复。')) return;
+      try {
+        await apiRaw('/post/delete', { method: 'POST', body: JSON.stringify({ id: delPostBtn.dataset.id }) });
+        toast('已删除');
+        S.loaded = false;
+        if (location.hash.indexOf('/p/') > 0) location.hash = '#/';
+        else route();
+      } catch (err) { toast('删除失败：' + err.message); }
+      return;
+    }
+
+    const delCmBtn = e.target.closest('[data-act="del-comment"]');
+    if (delCmBtn) {
+      if (!confirm('删除这条评论？')) return;
+      try {
+        await apiRaw('/comment/delete', { method: 'POST', body: JSON.stringify({ id: delCmBtn.dataset.id }) });
+        toast('评论已删除');
+        route();
+      } catch (err) { toast('删除失败：' + err.message); }
+      return;
+    }
+
+    const replyBtn = e.target.closest('[data-act="reply"]');
+    if (replyBtn) {
+      replyParent = { id: replyBtn.dataset.id, alias: replyBtn.dataset.alias };
+      const bar = $('#reply-bar');
+      if (bar) {
+        bar.classList.remove('hidden');
+        bar.innerHTML = '回复 @' + esc(replyParent.alias) + ' <button class="mini" data-act="reply-cancel">取消</button>';
+      }
+      const ta = $('#c-input');
+      if (ta) ta.focus();
+      return;
+    }
+
+    const replyCancelBtn = e.target.closest('[data-act="reply-cancel"]');
+    if (replyCancelBtn) {
+      replyParent = null;
+      const bar = $('#reply-bar');
+      if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
+      return;
+    }
     const melonBtn = e.target.closest('[data-act="melon"]');
     if (melonBtn) return doMelon(melonBtn);
 

@@ -14,6 +14,7 @@ const ANON_KEY = 'sb_publishable_Eu-_IB5Uigc8BZrl6DZb5w_zwPvkjm3';
 
 // 管理员口令：优先用 Netlify 环境变量 ADMIN_PASSWORD，没配就用默认值
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const GUARD_CODE = process.env.GUARD_CODE || '';
 // 管理员密钥：Netlify 环境变量 SUPABASE_SERVICE_KEY（不要把 service key 写进代码）
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 
@@ -39,6 +40,9 @@ exports.handler = async function (event) {
   if (path === '/post/create')    return handlePostCreate(event);
   if (path === '/comment/create') return handleCommentCreate(event);
   if (path === '/report/create')  return handleReportCreate(event);
+  if (path === '/staff/login')     return handleStaffLogin(event);
+  if (path === '/post/delete')     return handlePostDelete(event);
+  if (path === '/comment/delete')  return handleCommentDelete(event);
 
   if (event.body && String(event.body).length > 30000) {
     return json(413, { message: '内容太大了' });
@@ -549,6 +553,11 @@ async function handlePostCreate(event) {
   const alias = (String(body.author_alias || '').trim() || '匿名').slice(0, 20);
   const school = String(body.school || '').trim().slice(0, 40) || null;
 
+  let images = Array.isArray(body.images) ? body.images : [];
+  images = images.filter(function (x) { return typeof x === 'string' && x.indexOf('data:image/') === 0; }).slice(0, 3);
+  const imgBytes = images.reduce(function (n2, s) { return n2 + s.length; }, 0);
+  if (imgBytes > 400000) return json(413, { message: '图片太大了，压缩后再传' });
+
   if (title.length < 2 || title.length > 40) return json(400, { message: '标题要 2–40 字' });
   if (content.length < 2 || content.length > 1000) return json(400, { message: '正文要 2–1000 字' });
   if (ALLOWED_CATS.indexOf(cat) < 0) return json(400, { message: '分类不对' });
@@ -561,7 +570,7 @@ async function handlePostCreate(event) {
       method: 'POST',
       body: JSON.stringify({
         title: title, content: content, category: cat, credibility: cred,
-        school: school, tags: [], images: [],
+        school: school, tags: [], images: images,
         author_alias: alias, status: 'published', author_id: authorId
       })
     });
@@ -580,6 +589,8 @@ async function handleCommentCreate(event) {
   const postId = String(body.post_id || '').trim();
   const content = String(body.content || '').trim();
   const alias = (String(body.author_alias || '').trim() || '匿名').slice(0, 20);
+  const parentId = body.parent_id ? String(body.parent_id).trim() : null;
+  const authorId = await authUid(event);
 
   if (!postId) return json(400, { message: '缺少帖子' });
   if (content.length < 1 || content.length > 500) return json(400, { message: '评论要 1–500 字' });
@@ -587,7 +598,7 @@ async function handleCommentCreate(event) {
   try {
     const rows = await sb('comments', {
       method: 'POST',
-      body: JSON.stringify({ post_id: postId, parent_id: null, content: content, author_alias: alias })
+      body: JSON.stringify({ post_id: postId, parent_id: parentId, content: content, author_alias: alias, author_id: authorId })
     });
     return json(200, (rows && rows[0]) || { ok: true });
   } catch (err) {
@@ -618,5 +629,95 @@ async function handleReportCreate(event) {
     return json(200, { ok: true });
   } catch (err) {
     return json(500, { message: '提交失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 保安 / 管理员 ---------------- */
+function makeStaffToken(kind) {
+  const payload = Buffer.from(JSON.stringify({ r: kind, x: Date.now() + 12 * 3600 * 1000 })).toString('base64url');
+  const sig = crypto.createHmac('sha256', PEPPER).update('staff:' + payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+function verifyStaff(event) {
+  const tok = String(event.headers['x-staff'] || '').trim();
+  if (!tok || tok.indexOf('.') < 0) return null;
+  const parts = tok.split('.');
+  const expect = crypto.createHmac('sha256', PEPPER).update('staff:' + parts[0]).digest('base64url');
+  if (!safeEqual(parts[1], expect)) return null;
+  try {
+    const o = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
+    if (!o.r || !o.x || o.x < Date.now()) return null;
+    return o.r;
+  } catch (e) { return null; }
+}
+
+async function handleStaffLogin(event) {
+  if (!rateLimit('staff:' + clientIp(event), 8, 60000)) {
+    return json(429, { message: '试得太频繁，等一分钟' });
+  }
+
+  const body = readBody(event) || {};
+  const kind = String(body.kind || '');
+  const code = String(body.code || '');
+
+  if (kind === 'admin') {
+    if (!ADMIN_PASSWORD) return json(500, { message: '站点还没配置管理口令' });
+    if (!safeEqual(code, ADMIN_PASSWORD)) return json(401, { message: '口令不对' });
+    return json(200, { kind: 'admin', token: makeStaffToken('admin') });
+  }
+
+  if (kind === 'guard') {
+    if (!GUARD_CODE) return json(500, { message: '站点还没配置保安码' });
+    if (!safeEqual(code, GUARD_CODE)) return json(401, { message: '保安码不对' });
+    return json(200, { kind: 'guard', token: makeStaffToken('guard') });
+  }
+
+  return json(400, { message: '类型不对' });
+}
+
+async function handlePostDelete(event) {
+  const body = readBody(event) || {};
+  const id = String(body.id || '').trim();
+  if (!id) return json(400, { message: '缺少帖子 ID' });
+
+  const staff = verifyStaff(event);
+  const uid = await authUid(event);
+
+  try {
+    if (!staff) {
+      if (!uid) return json(401, { message: '请先登录' });
+      const rows = await sb('posts?id=eq.' + id + '&select=author_id');
+      const p = rows && rows[0];
+      if (!p) return json(404, { message: '帖子不存在' });
+      if (!p.author_id || p.author_id !== uid) return json(403, { message: '只能删除自己的帖子' });
+    }
+    await sb('posts?id=eq.' + id, { method: 'DELETE', prefer: 'return=minimal' });
+    return json(200, { ok: true });
+  } catch (err) {
+    return json(500, { message: '删除失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleCommentDelete(event) {
+  const body = readBody(event) || {};
+  const id = String(body.id || '').trim();
+  if (!id) return json(400, { message: '缺少评论 ID' });
+
+  const staff = verifyStaff(event);
+  const uid = await authUid(event);
+
+  try {
+    if (!staff) {
+      if (!uid) return json(401, { message: '请先登录' });
+      const rows = await sb('comments?id=eq.' + id + '&select=author_id');
+      const cm = rows && rows[0];
+      if (!cm) return json(404, { message: '评论不存在' });
+      if (!cm.author_id || cm.author_id !== uid) return json(403, { message: '只能删除自己的评论' });
+    }
+    await sb('comments?or=(id.eq.' + id + ',parent_id.eq.' + id + ')', { method: 'DELETE', prefer: 'return=minimal' });
+    return json(200, { ok: true });
+  } catch (err) {
+    return json(500, { message: '删除失败：' + String(err.message).slice(0, 120) });
   }
 }

@@ -1,4 +1,4 @@
-[build]
+﻿[build]
   publish = "netlify-v2/public"
   functions = "netlify-v2/netlify/functions"
 
