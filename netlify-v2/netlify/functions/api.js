@@ -43,6 +43,10 @@ exports.handler = async function (event) {
   if (path === '/staff/login')     return handleStaffLogin(event);
   if (path === '/post/delete')     return handlePostDelete(event);
   if (path === '/comment/delete')  return handleCommentDelete(event);
+  if (path === '/vote')            return handleVote(event);
+  if (path === '/evidence')        return handleEvidence(event);
+  if (path === '/update/add')      return handleUpdateAdd(event);
+  if (path === '/checkin')         return handleCheckin(event);
 
   if (event.body && String(event.body).length > 30000) {
     return json(413, { message: '内容太大了' });
@@ -321,7 +325,8 @@ async function handleUserGet(event) {
 
     return json(200, {
       id: p.id, username: p.username, bio: p.bio || '',
-      tags: p.tags || [], created_at: p.created_at, postCount: postCount
+      tags: p.tags || [], created_at: p.created_at, postCount: postCount,
+      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null
     });
   } catch (err) {
     return json(500, { message: '查询失败：' + String(err.message).slice(0, 120) });
@@ -448,11 +453,11 @@ async function handleUserMe(event) {
   try {
     let p = null;
 
-    const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at');
+    const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
     p = byId && byId[0];
 
     if (!p && info.n) {
-      const byName = await sb('profiles?username=eq.' + encodeURIComponent(info.n) + '&select=id,username,bio,tags,created_at');
+      const byName = await sb('profiles?username=eq.' + encodeURIComponent(info.n) + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
       p = byName && byName[0];
     }
 
@@ -470,7 +475,7 @@ async function handleUserMe(event) {
       } catch (e) {}
 
       if (!p) {
-        const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at');
+        const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
         p = again && again[0];
       }
     }
@@ -485,7 +490,8 @@ async function handleUserMe(event) {
 
     return json(200, {
       id: p.id, username: p.username, bio: p.bio || '',
-      tags: p.tags || [], created_at: p.created_at, postCount: postCount
+      tags: p.tags || [], created_at: p.created_at, postCount: postCount,
+      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null
     });
   } catch (err) {
     return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
@@ -513,6 +519,11 @@ async function handleMelon(event) {
     if (fresh) {
       try {
         await sb('rpc/add_melon', { method: 'POST', body: JSON.stringify({ p_post_id: id }) });
+        try {
+          const pr = await sb('posts?id=eq.' + id + '&select=author_id');
+          const aid = pr && pr[0] && pr[0].author_id;
+          if (aid) await sb('rpc/bump_exp', { method: 'POST', body: JSON.stringify({ p_uid: aid, p_n: 1 }) });
+        } catch (e3) {}
       } catch (e) {
         try {
           await sb('reactions?post_id=eq.' + id + '&device_id=eq.' + encodeURIComponent(dev) + '&kind=eq.melon', {
@@ -564,6 +575,13 @@ async function handlePostCreate(event) {
   if (ALLOWED_CRED.indexOf(cred) < 0) return json(400, { message: '可信度不对' });
 
   const authorId = await authUid(event);
+  let authorExp = 0;
+  if (authorId) {
+    try {
+      const pr = await sb('profiles?id=eq.' + authorId + '&select=exp');
+      authorExp = (pr && pr[0] && pr[0].exp) || 0;
+    } catch (e) {}
+  }
 
   try {
     const rows = await sb('posts', {
@@ -571,9 +589,12 @@ async function handlePostCreate(event) {
       body: JSON.stringify({
         title: title, content: content, category: cat, credibility: cred,
         school: school, tags: [], images: images,
-        author_alias: alias, status: 'published', author_id: authorId
+        author_alias: alias, status: 'published', author_id: authorId, author_exp: authorExp
       })
     });
+    if (authorId) {
+      try { await sb('rpc/bump_exp', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_n: 10 }) }); } catch (e) {}
+    }
     return json(200, (rows && rows[0]) || { ok: true });
   } catch (err) {
     return json(500, { message: '发帖失败：' + String(err.message).slice(0, 120) });
@@ -591,6 +612,13 @@ async function handleCommentCreate(event) {
   const alias = (String(body.author_alias || '').trim() || '匿名').slice(0, 20);
   const parentId = body.parent_id ? String(body.parent_id).trim() : null;
   const authorId = await authUid(event);
+  let authorExp = 0;
+  if (authorId) {
+    try {
+      const pr = await sb('profiles?id=eq.' + authorId + '&select=exp');
+      authorExp = (pr && pr[0] && pr[0].exp) || 0;
+    } catch (e) {}
+  }
 
   if (!postId) return json(400, { message: '缺少帖子' });
   if (content.length < 1 || content.length > 500) return json(400, { message: '评论要 1–500 字' });
@@ -600,6 +628,9 @@ async function handleCommentCreate(event) {
       method: 'POST',
       body: JSON.stringify({ post_id: postId, parent_id: parentId, content: content, author_alias: alias, author_id: authorId })
     });
+    if (authorId) {
+      try { await sb('rpc/bump_exp', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_n: 2 }) }); } catch (e) {}
+    }
     return json(200, (rows && rows[0]) || { ok: true });
   } catch (err) {
     return json(500, { message: '评论失败：' + String(err.message).slice(0, 120) });
@@ -719,5 +750,112 @@ async function handleCommentDelete(event) {
     return json(200, { ok: true });
   } catch (err) {
     return json(500, { message: '删除失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 站队投票 ---------------- */
+async function handleVote(event) {
+  if (!rateLimit('vote:' + clientIp(event), 60, 60000)) {
+    return json(429, { message: '点太快了' });
+  }
+
+  const body = readBody(event) || {};
+  const postId = String(body.post_id || '').trim();
+  const choice = String(body.choice || '');
+  const dev = String(body.device_id || '').trim();
+
+  if (!postId || !dev) return json(400, { message: '参数不全' });
+  if (['believe', 'doubt', 'unsure'].indexOf(choice) < 0) return json(400, { message: '选项不对' });
+
+  try {
+    const ins = await sb('votes', {
+      method: 'POST',
+      prefer: 'return=representation,resolution=ignore-duplicates',
+      body: JSON.stringify({ post_id: postId, device_id: dev, choice: choice })
+    });
+
+    if (ins && ins.length) {
+      try { await sb('rpc/bump_vote', { method: 'POST', body: JSON.stringify({ p_post_id: postId, p_choice: choice }) }); } catch (e) {}
+    }
+
+    const rows = await sb('posts?id=eq.' + postId + '&select=vote_believe,vote_doubt,vote_unsure');
+    const p = (rows && rows[0]) || {};
+    return json(200, {
+      counted: !!(ins && ins.length),
+      believe: p.vote_believe || 0,
+      doubt: p.vote_doubt || 0,
+      unsure: p.vote_unsure || 0
+    });
+  } catch (err) {
+    return json(500, { message: '投票失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 求锤 ---------------- */
+async function handleEvidence(event) {
+  if (!rateLimit('ev:' + clientIp(event), 30, 60000)) {
+    return json(429, { message: '点太快了' });
+  }
+
+  const body = readBody(event) || {};
+  const postId = String(body.post_id || '').trim();
+  const dev = String(body.device_id || '').trim();
+  if (!postId || !dev) return json(400, { message: '参数不全' });
+
+  try {
+    const ins = await sb('evidence_votes', {
+      method: 'POST',
+      prefer: 'return=representation,resolution=ignore-duplicates',
+      body: JSON.stringify({ post_id: postId, device_id: dev })
+    });
+
+    if (ins && ins.length) {
+      try { await sb('rpc/bump_evidence', { method: 'POST', body: JSON.stringify({ p_post_id: postId }) }); } catch (e) {}
+    }
+
+    const rows = await sb('posts?id=eq.' + postId + '&select=evidence_count');
+    return json(200, { counted: !!(ins && ins.length), count: (rows && rows[0] && rows[0].evidence_count) || 0 });
+  } catch (err) {
+    return json(500, { message: '操作失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 后续更新 ---------------- */
+async function handleUpdateAdd(event) {
+  if (!rateLimit('upd:' + clientIp(event), 10, 60000)) {
+    return json(429, { message: '补充太频繁' });
+  }
+
+  const body = readBody(event) || {};
+  const postId = String(body.post_id || '').trim();
+  const content = String(body.content || '').trim();
+  const info = verifyToken(bearer(event));
+  const alias = (info && info.n) ? info.n : (String(body.author_alias || '匿名').slice(0, 20));
+
+  if (!postId) return json(400, { message: '缺少帖子' });
+  if (content.length < 2 || content.length > 300) return json(400, { message: '补充要 2–300 字' });
+
+  try {
+    await sb('rpc/append_update', {
+      method: 'POST',
+      body: JSON.stringify({ p_post_id: postId, p_text: content, p_alias: alias })
+    });
+    return json(200, { ok: true });
+  } catch (err) {
+    return json(500, { message: '提交失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 签到 ---------------- */
+async function handleCheckin(event) {
+  const uid = await authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+
+  try {
+    const rows = await sb('rpc/do_checkin', { method: 'POST', body: JSON.stringify({ p_uid: uid }) });
+    const r = Array.isArray(rows) ? rows[0] : rows;
+    return json(200, r || { ok: true });
+  } catch (err) {
+    return json(500, { message: '签到失败：' + String(err.message).slice(0, 120) });
   }
 }

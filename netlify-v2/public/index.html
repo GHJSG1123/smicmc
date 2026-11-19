@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -527,6 +527,26 @@ a.alias:hover{color:#fff}
 .mini:hover{background:rgba(255,255,255,.07);color:var(--fg)}
 .reply-bar{font-size:12.5px;color:var(--muted);background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-bottom:8px}
 
+/* ---------------- 等级 / 投票 / 后续 ---------------- */
+.lv{font-size:10.5px;padding:1px 7px;border-radius:5px;background:rgba(244,63,94,.14);color:#fda4af;border:1px solid rgba(244,63,94,.25);white-space:nowrap}
+.profile-lv{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.vote-bar{margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vote-q{font-size:12.5px;color:var(--dim)}
+.vote-btn{font-size:12.5px;padding:4px 12px;border-radius:999px;border:1px solid var(--border);color:var(--muted);transition:.15s}
+.vote-btn:hover{border-color:#3a3a46;color:var(--fg)}
+.vote-res{display:flex;gap:14px;align-items:baseline;font-size:12.5px;color:var(--fg-soft);flex:1;flex-wrap:wrap}
+.vote-res em{font-style:normal;color:var(--faint);font-size:11.5px}
+.vote-track{display:flex;width:100%;height:6px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,.06)}
+.vote-track i{display:block;height:100%}
+.timeline-box{margin-top:22px}
+.timeline{display:flex;flex-direction:column;gap:0;border-left:2px solid rgba(255,255,255,.08);padding-left:14px;margin:8px 0 12px}
+.tl-item{position:relative;padding:0 0 14px}
+.tl-item:before{content:'';position:absolute;left:-19px;top:5px;width:7px;height:7px;border-radius:50%;background:var(--red)}
+.tl-time{font-size:11.5px;color:var(--faint)}
+.tl-item p{font-size:13.5px;color:var(--fg-soft);line-height:1.7;margin-top:2px}
+.update-add{display:flex;gap:8px}
+.update-add .input{flex:1}
+
 </style>
 </head>
 <body>
@@ -687,6 +707,45 @@ a.alias:hover{color:#fff}
     for (let i = 0; i < String(str).length; i++) h = (h * 31 + String(str).charCodeAt(i)) % 360;
     return h;
   }
+  const LEVELS = [
+    { min: 0, name: '吃瓜群众' },
+    { min: 50, name: '瓜田常客' },
+    { min: 200, name: '资深瓜农' },
+    { min: 500, name: '瓜田守护者' }
+  ];
+
+  function levelOf(exp) {
+    let idx = 0;
+    for (let k = 0; k < LEVELS.length; k++) if ((exp || 0) >= LEVELS[k].min) idx = k;
+    return { name: LEVELS[idx].name, idx: idx, next: LEVELS[idx + 1] ? LEVELS[idx + 1].min : null };
+  }
+
+  function voteBar(p) {
+    const b = p.vote_believe || 0, d = p.vote_doubt || 0, u = p.vote_unsure || 0;
+    const total = b + d + u;
+    const mine = localStorage.getItem('gua:vote:' + p.id);
+
+    if (!total) {
+      return '<div class="vote-bar">' +
+        '<span class="vote-q">你信吗</span>' +
+        '<button class="vote-btn" data-vote="believe" data-id="' + esc(p.id) + '">信</button>' +
+        '<button class="vote-btn" data-vote="doubt" data-id="' + esc(p.id) + '">不信</button>' +
+        '<button class="vote-btn" data-vote="unsure" data-id="' + esc(p.id) + '">观望</button>' +
+      '</div>';
+    }
+
+    const pct = n => total ? Math.round(n * 100 / total) : 0;
+    return '<div class="vote-bar">' +
+      '<div class="vote-res"><span>信 ' + pct(b) + '%</span><span>不信 ' + pct(d) + '%</span><span>观望 ' + pct(u) + '%</span>' +
+        '<em>' + total + ' 人已表态' + (mine ? ' · 你选了' + ({ believe: '信', doubt: '不信', unsure: '观望' }[mine] || '') : '') + '</em></div>' +
+      '<div class="vote-track">' +
+        '<i style="width:' + pct(b) + '%;background:#10b981"></i>' +
+        '<i style="width:' + pct(d) + '%;background:#f43f5e"></i>' +
+        '<i style="width:' + pct(u) + '%;background:#6b7280"></i>' +
+      '</div>' +
+    '</div>';
+  }
+
   const avatar = name =>
     '<span class="avatar" style="--h:' + hue(name || '') + '">' + esc((name || '瓜').trim().charAt(0)) + '</span>';
 
@@ -956,6 +1015,7 @@ a.alias:hover{color:#fff}
       '<div class="card-head"><a class="avatar-link" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + avatar(p.author_alias) + '</a>' +
         '<div class="card-meta">' +
           '<a class="alias" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + esc(p.author_alias) + '</a>' +
+          ((p.author_exp || 0) >= 50 ? '<span class="lv">' + levelOf(p.author_exp).name + '</span>' : '') +
           '<span>·</span><span>' + relTime(p.created_at) + '</span>' +
           (p.school ? '<span>·</span><span>' + esc(p.school) + '</span>' : '') +
         '</div>' +
@@ -967,6 +1027,7 @@ a.alias:hover{color:#fff}
       '<div class="card-tags"><span class="tag">' + esc(CAT_LABEL[p.category] || '其他') + '</span>' +
         (p.tags || []).slice(0, 3).map(t => '<span class="tag">#' + esc(t) + '</span>').join('') +
       '</div>' +
+      voteBar(p) +
       '<div class="card-actions">' +
         '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
         '<a class="act" href="#/p/' + esc(p.id) + '">💬 ' + n + '</a>' +
@@ -1214,12 +1275,29 @@ a.alias:hover{color:#fff}
           (p.school ? '<span class="tag">' + esc(p.school) + '</span>' : '') +
           (p.tags || []).map(t => '<span class="tag">#' + esc(t) + '</span>').join('') +
         '</div>' +
-        '<div class="card-actions">' +
+        voteBar(p) +
+      '<div class="card-actions">' +
           '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
           (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
+          ((p.credibility === 'rumor' || p.credibility === 'unverified') ? '<button class="act" data-act="evidence" data-id="' + esc(p.id) + '">求锤 ' + (p.evidence_count || 0) + '</button>' : '') +
           '<button class="act" data-act="report">举报</button>' +
         '</div>' +
+        voteBar(p) +
       '</article>' +
+      '<div class="timeline-box">' +
+        '<h3 class="section-title">后续' +
+          ((p.updates && p.updates.length) ? ' <span class="hint">' + p.updates.length + ' 条</span>' : '') +
+        '</h3>' +
+        ((p.updates && p.updates.length)
+          ? '<div class="timeline">' + p.updates.map(function (u) {
+              return '<div class="tl-item"><span class="tl-time">' + esc(u.at || '') + (u.a ? ' · ' + esc(u.a) : '') + '</span><p>' + esc(u.t || '') + '</p></div>';
+            }).join('') + '</div>'
+          : '<div class="hint">还没有后续。知道内情的，补一句。</div>') +
+        '<div class="update-add">' +
+          '<input class="input" id="u-input" maxlength="300" placeholder="补充后续：时间、地点、结果" />' +
+          '<button class="btn btn-sm" id="u-send">补充</button>' +
+        '</div>' +
+      '</div>' +
       '<h3 class="section-title">评论 <span class="hint" id="c-count"></span></h3>' +
       '<div id="comments"><div class="loading">加载中…</div></div>' +
       '<div class="form comment-form">' +
@@ -1232,6 +1310,17 @@ a.alias:hover{color:#fff}
       '</div>';
 
     loadComments(p.id);
+
+    const uSend = $('#u-send');
+    if (uSend) uSend.addEventListener('click', async () => {
+      const v = $('#u-input').value.trim();
+      if (v.length < 2) return toast('至少写 2 个字');
+      try {
+        await apiRaw('/update/add', { method: 'POST', body: JSON.stringify({ post_id: p.id, content: v }) });
+        toast('已补充');
+        viewDetail(p.id);
+      } catch (e) { toast(e.message); }
+    });
 
     $('#c-send').addEventListener('click', async () => {
       const el = $('#c-input');
@@ -1251,6 +1340,17 @@ a.alias:hover{color:#fff}
         if (rb) { rb.classList.add('hidden'); rb.innerHTML = ''; }
         toast('评论已发布');
         loadComments(p.id);
+
+    const uSend = $('#u-send');
+    if (uSend) uSend.addEventListener('click', async () => {
+      const v = $('#u-input').value.trim();
+      if (v.length < 2) return toast('至少写 2 个字');
+      try {
+        await apiRaw('/update/add', { method: 'POST', body: JSON.stringify({ post_id: p.id, content: v }) });
+        toast('已补充');
+        viewDetail(p.id);
+      } catch (e) { toast(e.message); }
+    });
       } catch (e) { toast('发布失败：' + e.message); }
       finally { btn.disabled = false; btn.textContent = '发表评论'; }
     });
@@ -1495,6 +1595,9 @@ a.alias:hover{color:#fff}
     }
 
     const isMe = isLoggedIn() && account.id === p.id;
+    const lv = levelOf(p.exp);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const checkedToday = String(p.last_checkin || '').slice(0, 10) === todayStr;
     const days = Math.max(1, Math.floor((Date.now() - new Date(p.created_at).getTime()) / 86400000) + 1);
     let posts = [];
     try {
@@ -1512,6 +1615,11 @@ a.alias:hover{color:#fff}
         '<div class="profile-stats">' +
           '<div class="stat"><b>' + days + '</b><span>加入天数</span></div>' +
           '<div class="stat"><b>' + (p.postCount || 0) + '</b><span>帖子</span></div>' +
+        '</div>' +
+        '<div class="profile-lv">' +
+          '<span class="lv">' + lv.name + '</span>' +
+          '<span class="hint">经验 ' + (p.exp || 0) + (lv.next ? ' / ' + lv.next : '') + ' · 连签 ' + (p.streak || 0) + ' 天</span>' +
+          (isMe ? '<button class="btn btn-sm" id="p-checkin">' + (checkedToday ? '今天已签到' : '签到') + '</button>' : '') +
         '</div>' +
         '<div class="profile-actions">' +
           (isMe
@@ -1537,6 +1645,14 @@ a.alias:hover{color:#fff}
     const dm = $('#p-dm');
     if (dm) dm.addEventListener('click', () => { location.hash = '#/messages/' + encodeURIComponent(p.username); });
 
+    const ck = $('#p-checkin');
+    if (ck) ck.addEventListener('click', async () => {
+      try {
+        const r = await apiRaw('/checkin', { method: 'POST', body: '{}' });
+        toast(r.already ? '今天已经签过了' : '签到成功，连签 ' + r.streak + ' 天');
+        viewUser(p.username);
+      } catch (e) { toast(e.message); }
+    });
     const out = $('#p-logout');
     if (out) out.addEventListener('click', () => {
       signOut();
@@ -1874,6 +1990,34 @@ a.alias:hover{color:#fff}
     const seedBtn = e.target.closest('[data-seed]');
     if (seedBtn) return seedDemo(seedBtn);
 
+    const voteBtn = e.target.closest('[data-vote]');
+    if (voteBtn) {
+      const vid = voteBtn.dataset.id;
+      try {
+        const r = await apiRaw('/vote', {
+          method: 'POST',
+          body: JSON.stringify({ post_id: vid, choice: voteBtn.dataset.vote, device_id: deviceId() })
+        });
+        localStorage.setItem('gua:vote:' + vid, voteBtn.dataset.vote);
+        const bar = voteBtn.closest('.vote-bar');
+        if (bar) bar.outerHTML = voteBar({ id: vid, vote_believe: r.believe, vote_doubt: r.doubt, vote_unsure: r.unsure });
+        toast(r.counted ? '已记录' : '你已经投过了');
+      } catch (err) { toast(err.message); }
+      return;
+    }
+
+    const evBtn = e.target.closest('[data-act="evidence"]');
+    if (evBtn) {
+      try {
+        const r = await apiRaw('/evidence', {
+          method: 'POST',
+          body: JSON.stringify({ post_id: evBtn.dataset.id, device_id: deviceId() })
+        });
+        evBtn.textContent = '求锤 ' + (r.count || 0);
+        toast(r.counted ? '已顶上去' : '你已经顶过了');
+      } catch (err) { toast(err.message); }
+      return;
+    }
     const delPostBtn = e.target.closest('[data-act="del-post"]');
     if (delPostBtn) {
       if (!confirm('删除这条帖子？删除后不可恢复。')) return;
