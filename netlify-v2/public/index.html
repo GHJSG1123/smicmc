@@ -1063,7 +1063,7 @@ a.alias:hover{color:#fff}
     $('#r-ok').addEventListener('click', async () => {
       closeModal();
       try {
-        await rest('reports', {
+        await apiRaw('/report/create', {
           method: 'POST',
           body: JSON.stringify({ target_type: type, target_id: id, reason: reason })
         });
@@ -1167,10 +1167,9 @@ a.alias:hover{color:#fff}
       const btn = $('#c-send');
       btn.disabled = true; btn.textContent = '发送中…';
       try {
-        await rest('comments', {
+        await apiRaw('/comment/create', {
           method: 'POST',
-          headers: { Prefer: 'return=representation' },
-          body: JSON.stringify({ post_id: p.id, parent_id: null, content: val, author_alias: nick() || alias() })
+          body: JSON.stringify({ post_id: p.id, content: val, author_alias: nick() || alias() })
         });
         el.value = '';
         toast('评论已发布');
@@ -1288,11 +1287,11 @@ a.alias:hover{color:#fff}
       if (isLoggedIn() && S.hasAuthorId) payload.author_id = account.id;
 
       try {
-        const rows = await rest('posts', {
+        const one = await apiRaw('/post/create', {
           method: 'POST',
-          headers: { Prefer: 'return=representation' },
           body: JSON.stringify(payload)
         });
+        const rows = [one];
         if (rows && rows[0]) addMyId(rows[0].id);
         S.loaded = false;
         toast('发布成功');
@@ -1662,7 +1661,7 @@ a.alias:hover{color:#fff}
           school: d.school, tags: d.tags || [], images: [], author_alias: newAlias(),
           status: 'published', created_at: new Date(Date.now() - d.hours * 3600000).toISOString()
         };
-        await rest('posts', { method: 'POST', body: JSON.stringify(payload) });
+        await apiRaw('/post/create', { method: 'POST', body: JSON.stringify(payload) });
       }
       await loadPosts(true);
       paintFeed();
@@ -1680,30 +1679,24 @@ a.alias:hover{color:#fff}
     if (!id) return;
     if (localStorage.getItem(melonKey(id))) return toast('你已经吃过这个瓜了');
 
+    btn.disabled = true;
     try {
-      const rows = await rest('reactions', {
+      const r = await apiRaw('/melon', {
         method: 'POST',
-        headers: { Prefer: 'return=representation,resolution=ignore-duplicates' },
-        body: JSON.stringify({ post_id: id, device_id: deviceId(), kind: 'melon' })
+        body: JSON.stringify({ post_id: id, device_id: deviceId() })
       });
-      if (!rows || !rows.length) { localStorage.setItem(melonKey(id), '1'); return toast('已经吃过了'); }
-    } catch (e) { return toast('操作失败：' + e.message); }
-
-    try {
-      await rest('rpc/add_melon', { method: 'POST', body: JSON.stringify({ p_post_id: id }) });
+      localStorage.setItem(melonKey(id), '1');
+      const span = btn.querySelector('[data-melon]');
+      if (span) span.textContent = r.melon;
+      btn.classList.add('on', 'pop');
+      setTimeout(() => btn.classList.remove('pop'), 360);
+      if (!r.counted) toast('你之前吃过这个瓜了');
     } catch (e) {
-      localStorage.removeItem(melonKey(id));
-      toast('点赞失败：' + e.message);
-      return;
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
     }
-    localStorage.setItem(melonKey(id), '1');
-
-    const span = btn.querySelector('[data-melon]');
-    if (span) span.textContent = (parseInt(span.textContent, 10) || 0) + 1;
-    btn.classList.add('on', 'pop');
-    setTimeout(() => btn.classList.remove('pop'), 360);
   }
-
   /* ================= 事件 ================= */
   document.addEventListener('click', async e => {
     const admHide = e.target.closest('[data-adm-hide]');

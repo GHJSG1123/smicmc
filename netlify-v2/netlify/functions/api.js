@@ -13,7 +13,7 @@ const SUPABASE = 'https://uadpbsgfithscrknqjnu.supabase.co';
 const ANON_KEY = 'sb_publishable_Eu-_IB5Uigc8BZrl6DZb5w_zwPvkjm3';
 
 // 管理员口令：优先用 Netlify 环境变量 ADMIN_PASSWORD，没配就用默认值
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'gua2026';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 // 管理员密钥：Netlify 环境变量 SUPABASE_SERVICE_KEY（不要把 service key 写进代码）
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 
@@ -35,6 +35,14 @@ exports.handler = async function (event) {
   if (path === '/msg/send')    return handleMsgSend(event);
   if (path === '/msg/inbox')   return handleMsgInbox(event);
   if (path === '/msg/thread')  return handleMsgThread(event);
+  if (path === '/melon')       return handleMelon(event);
+  if (path === '/post/create')    return handlePostCreate(event);
+  if (path === '/comment/create') return handleCommentCreate(event);
+  if (path === '/report/create')  return handleReportCreate(event);
+
+  if (event.body && String(event.body).length > 30000) {
+    return json(413, { message: '内容太大了' });
+  }
 
   const qs = event.rawQuery ? '?' + event.rawQuery : '';
   const target = SUPABASE + path + qs;
@@ -42,7 +50,7 @@ exports.handler = async function (event) {
   // 管理员请求：带对口令就走 service key（绕过 RLS），否则用公开 key
   const adminHeader = event.headers['x-admin-key'] || '';
   if (adminHeader) {
-    if (adminHeader !== ADMIN_PASSWORD) {
+    if (!ADMIN_PASSWORD || !safeEqual(adminHeader, ADMIN_PASSWORD)) {
       return {
         statusCode: 403,
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -107,7 +115,7 @@ exports.handler = async function (event) {
    ===================================================================== */
 const crypto = require('crypto');
 
-const PEPPER = process.env.AUTH_SECRET || process.env.ADMIN_PASSWORD || 'gua-default-pepper';
+const PEPPER = process.env.AUTH_SECRET || process.env.SUPABASE_SERVICE_KEY || process.env.ADMIN_PASSWORD || 'gua-default-pepper';
 
 function hashPass(username, password) {
   return crypto.createHmac('sha256', PEPPER)
@@ -131,7 +139,7 @@ async function sb(path, opts) {
       apikey: SERVICE_KEY,
       Authorization: 'Bearer ' + SERVICE_KEY,
       'Content-Type': 'application/json',
-      Prefer: 'return=representation'
+      Prefer: o.prefer || 'return=representation'
     },
     body: o.body
   });
@@ -142,6 +150,9 @@ async function sb(path, opts) {
 
 async function handleAuth(isRegister, event) {
   if ((event.httpMethod || 'GET') !== 'POST') return json(405, { message: '只支持 POST' });
+  if (!rateLimit('auth:' + clientIp(event), 12, 60000)) {
+    return json(429, { message: '操作太频繁，请等一分钟再试' });
+  }
   if (!SERVICE_KEY) return json(500, { message: '站点还没配置 SUPABASE_SERVICE_KEY' });
 
   let body;
@@ -159,23 +170,32 @@ async function handleAuth(isRegister, event) {
     const exist = rows && rows[0];
 
     if (isRegister) {
-      if (exist) return json(409, { message: '这个用户名已经有人用了' });
+      if (exist) return json(409, { message: '用户名不可用，换一个试试' });
       const created = await sb('profiles', {
         method: 'POST',
-        body: JSON.stringify({ username: username, pass_hash: hashPass(username, password) })
+        body: JSON.stringify({ username: username, pass_hash: makeScrypt(username, password) })
       });
       const row = created && created[0];
       if (!row) return json(500, { message: '注册失败，请重试' });
-      return json(200, { id: row.id, username: row.username, token: makeToken(row.id, row.username) });
+      return json(200, { id: row.id, username: row.username, token: makeToken(row.id, row.username, 0) });
     }
 
     if (!exist) return json(401, { message: '用户名或密码不对' });
-    if (exist.pass_hash !== hashPass(username, password)) return json(401, { message: '用户名或密码不对' });
-    return json(200, { id: exist.id, username: exist.username, token: makeToken(exist.id, exist.username) });
+    if (!checkPass(exist.pass_hash, username, password)) return json(401, { message: '用户名或密码不对' });
+
+    if (String(exist.pass_hash || '').indexOf('scrypt$') !== 0) {
+      try {
+        await sb('profiles?id=eq.' + exist.id, {
+          method: 'PATCH', prefer: 'return=minimal',
+          body: JSON.stringify({ pass_hash: makeScrypt(username, password) })
+        });
+      } catch (e) {}
+    }
+    return json(200, { id: exist.id, username: exist.username, token: makeToken(exist.id, exist.username, exist.token_version || 0) });
   } catch (err) {
     const msg = String(err.message || '');
     if (msg.indexOf('duplicate') >= 0 || msg.indexOf('23505') >= 0) {
-      return json(409, { message: '这个用户名已经有人用了' });
+      return json(409, { message: '用户名不可用，换一个试试' });
     }
     if (msg.indexOf('42P01') >= 0 || msg.indexOf('does not exist') >= 0) {
       return json(500, { message: '还没建 profiles 表，请先在 Supabase 跑建表 SQL' });
@@ -189,8 +209,8 @@ async function handleAuth(isRegister, event) {
    ===================================================================== */
 const TOKEN_TTL = 30 * 24 * 3600 * 1000;
 
-function makeToken(uid, name) {
-  const payload = Buffer.from(JSON.stringify({ u: uid, n: name || '', x: Date.now() + TOKEN_TTL })).toString('base64url');
+function makeToken(uid, name, ver) {
+  const payload = Buffer.from(JSON.stringify({ u: uid, n: name || '', v: ver || 0, x: Date.now() + TOKEN_TTL })).toString('base64url');
   const sig = crypto.createHmac('sha256', PEPPER).update(payload).digest('base64url');
   return payload + '.' + sig;
 }
@@ -200,7 +220,7 @@ function verifyToken(tok) {
   const parts = String(tok).split('.');
   const payload = parts[0], sig = parts[1];
   const expect = crypto.createHmac('sha256', PEPPER).update(payload).digest('base64url');
-  if (sig !== expect) return null;
+  if (!safeEqual(sig, expect)) return null;
   try {
     const o = JSON.parse(Buffer.from(payload, 'base64url').toString());
     if (!o.u || !o.x || o.x < Date.now()) return null;
@@ -208,12 +228,72 @@ function verifyToken(tok) {
   } catch (e) { return null; }
 }
 
+/* ---------------- 限流（实例内存，粗粒度） ---------------- */
+const RL_BUCKETS = new Map();
+
+function rateLimit(key, max, windowMs) {
+  const now = Date.now();
+  let arr = RL_BUCKETS.get(key) || [];
+  arr = arr.filter(t => now - t < windowMs);
+  if (arr.length >= max) {
+    RL_BUCKETS.set(key, arr);
+    return false;
+  }
+  arr.push(now);
+  RL_BUCKETS.set(key, arr);
+  if (RL_BUCKETS.size > 5000) RL_BUCKETS.clear();
+  return true;
+}
+
+function clientIp(event) {
+  const h = event.headers || {};
+  const raw = h['x-nf-client-connection-ip'] || h['client-ip'] ||
+              (h['x-forwarded-for'] || '').split(',')[0] || 'unknown';
+  return String(raw).trim().slice(0, 64);
+}
+
+/* ---------------- 口令哈希：scrypt（兼容旧的 HMAC） ---------------- */
+function makeScrypt(username, password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password) + '\u0000' + String(username).toLowerCase(), salt, 32).toString('hex');
+  return 'scrypt$' + salt + '$' + hash;
+}
+
+function checkPass(stored, username, password) {
+  const s = String(stored || '');
+  if (s.indexOf('scrypt$') === 0) {
+    const parts = s.split('$');
+    if (parts.length !== 3) return false;
+    const calc = crypto.scryptSync(String(password) + '\u0000' + String(username).toLowerCase(), parts[1], 32).toString('hex');
+    return safeEqual(calc, parts[2]);
+  }
+  return safeEqual(s, hashPass(username, password));
+}
+
+function safeEqual(a, b) {
+  try {
+    const A = Buffer.from(String(a || ''), 'utf8');
+    const B = Buffer.from(String(b || ''), 'utf8');
+    if (A.length !== B.length) return false;
+    return crypto.timingSafeEqual(A, B);
+  } catch (e) { return false; }
+}
+
 function bearer(event) {
   const h = event.headers.authorization || event.headers.Authorization || '';
   return String(h).replace(/^Bearer\s+/i, '').trim();
 }
 
-function authUid(event) { const o = verifyToken(bearer(event)); return o ? o.u : null; }
+async function authUid(event) {
+  const info = verifyToken(bearer(event));
+  if (!info) return null;
+  try {
+    const rows = await sb('profiles?id=eq.' + info.u + '&select=token_version');
+    const v = (rows && rows[0] && rows[0].token_version) || 0;
+    if ((info.v || 0) !== v) return null;
+  } catch (e) { /* 查询失败时放行，避免误伤 */ }
+  return info.u;
+}
 function authInfo(event) { return verifyToken(bearer(event)); }
 
 function readBody(event) {
@@ -245,7 +325,7 @@ async function handleUserGet(event) {
 }
 
 async function handleUserUpdate(event) {
-  const uid = authUid(event);
+  const uid = await authUid(event);
   if (!uid) return json(401, { message: '请先登录' });
   const body = readBody(event);
   if (!body) return json(400, { message: '请求格式不对' });
@@ -268,7 +348,10 @@ async function handleUserUpdate(event) {
 
 /* ---------------- 私信 ---------------- */
 async function handleMsgSend(event) {
-  const uid = authUid(event);
+  if (!rateLimit('msg:' + clientIp(event), 30, 60000)) {
+    return json(429, { message: '发得太快了，歇一会儿' });
+  }
+  const uid = await authUid(event);
   if (!uid) return json(401, { message: '请先登录' });
   const body = readBody(event);
   if (!body) return json(400, { message: '请求格式不对' });
@@ -296,7 +379,7 @@ async function handleMsgSend(event) {
 }
 
 async function handleMsgInbox(event) {
-  const uid = authUid(event);
+  const uid = await authUid(event);
   if (!uid) return json(401, { message: '请先登录' });
   try {
     const rows = await sb('messages?or=(from_id.eq.' + uid + ',to_id.eq.' + uid +
@@ -325,7 +408,7 @@ async function handleMsgInbox(event) {
 }
 
 async function handleMsgThread(event) {
-  const uid = authUid(event);
+  const uid = await authUid(event);
   if (!uid) return json(401, { message: '请先登录' });
   const body = readBody(event);
   const withName = body && String(body.with || '').trim();
@@ -356,6 +439,7 @@ async function handleMsgThread(event) {
 async function handleUserMe(event) {
   const info = authInfo(event);
   if (!info) return json(401, { message: '请先登录' });
+  if (!(await authUid(event))) return json(401, { message: '登录已失效，请重新登录' });
 
   try {
     let p = null;
@@ -401,5 +485,138 @@ async function handleUserMe(event) {
     });
   } catch (err) {
     return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 吃瓜（服务端原子操作） ---------------- */
+async function handleMelon(event) {
+  if (!rateLimit('melon:' + clientIp(event), 60, 60000)) {
+    return json(429, { message: '点太快了，歇一会儿' });
+  }
+  const body = readBody(event) || {};
+  const id = String(body.post_id || '');
+  const dev = String(body.device_id || '');
+  if (!id || !dev) return json(400, { message: '参数不全' });
+
+  try {
+    const ins = await sb('reactions', {
+      method: 'POST',
+      prefer: 'return=representation,resolution=ignore-duplicates',
+      body: JSON.stringify({ post_id: id, device_id: dev, kind: 'melon' })
+    });
+    const fresh = !!(ins && ins.length);
+
+    if (fresh) {
+      try {
+        await sb('rpc/add_melon', { method: 'POST', body: JSON.stringify({ p_post_id: id }) });
+      } catch (e) {
+        try {
+          await sb('reactions?post_id=eq.' + id + '&device_id=eq.' + encodeURIComponent(dev) + '&kind=eq.melon', {
+            method: 'DELETE', prefer: 'return=minimal'
+          });
+        } catch (e2) {}
+        return json(500, { message: '计数失败：' + String(e.message).slice(0, 120) });
+      }
+    }
+
+    let melon = 0;
+    try {
+      const rows = await sb('posts?id=eq.' + id + '&select=melon');
+      melon = (rows && rows[0] && rows[0].melon) || 0;
+    } catch (e) {}
+
+    return json(200, { counted: fresh, melon: melon });
+  } catch (err) {
+    return json(500, { message: '点赞失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 服务端内容校验 ---------------- */
+const ALLOWED_CATS = ['news', 'rumor', 'gossip', 'leak', 'debunk', 'help'];
+const ALLOWED_CRED = ['confirmed', 'unverified', 'rumor', 'debunked'];
+const ALLOWED_REASONS = ['privacy', 'attack', 'rumor', 'nsfw', 'spam', 'other'];
+
+async function handlePostCreate(event) {
+  if (!rateLimit('post:' + clientIp(event), 6, 60000)) {
+    return json(429, { message: '发帖太频繁，歇一分钟' });
+  }
+
+  const body = readBody(event) || {};
+  const title = String(body.title || '').trim();
+  const content = String(body.content || '').trim();
+  const cat = String(body.category || 'news');
+  const cred = String(body.credibility || 'unverified');
+  const alias = (String(body.author_alias || '').trim() || '匿名').slice(0, 20);
+  const school = String(body.school || '').trim().slice(0, 40) || null;
+
+  if (title.length < 2 || title.length > 40) return json(400, { message: '标题要 2–40 字' });
+  if (content.length < 2 || content.length > 1000) return json(400, { message: '正文要 2–1000 字' });
+  if (ALLOWED_CATS.indexOf(cat) < 0) return json(400, { message: '分类不对' });
+  if (ALLOWED_CRED.indexOf(cred) < 0) return json(400, { message: '可信度不对' });
+
+  const authorId = await authUid(event);
+
+  try {
+    const rows = await sb('posts', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: title, content: content, category: cat, credibility: cred,
+        school: school, tags: [], images: [],
+        author_alias: alias, status: 'published', author_id: authorId
+      })
+    });
+    return json(200, (rows && rows[0]) || { ok: true });
+  } catch (err) {
+    return json(500, { message: '发帖失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleCommentCreate(event) {
+  if (!rateLimit('cmt:' + clientIp(event), 20, 60000)) {
+    return json(429, { message: '评论太频繁，歇一会儿' });
+  }
+
+  const body = readBody(event) || {};
+  const postId = String(body.post_id || '').trim();
+  const content = String(body.content || '').trim();
+  const alias = (String(body.author_alias || '').trim() || '匿名').slice(0, 20);
+
+  if (!postId) return json(400, { message: '缺少帖子' });
+  if (content.length < 1 || content.length > 500) return json(400, { message: '评论要 1–500 字' });
+
+  try {
+    const rows = await sb('comments', {
+      method: 'POST',
+      body: JSON.stringify({ post_id: postId, parent_id: null, content: content, author_alias: alias })
+    });
+    return json(200, (rows && rows[0]) || { ok: true });
+  } catch (err) {
+    return json(500, { message: '评论失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+async function handleReportCreate(event) {
+  if (!rateLimit('rep:' + clientIp(event), 10, 60000)) {
+    return json(429, { message: '举报提交太频繁' });
+  }
+
+  const body = readBody(event) || {};
+  const type = String(body.target_type || '');
+  const target = String(body.target_id || '').trim();
+  const reason = String(body.reason || '');
+  const detail = String(body.detail || '').slice(0, 200);
+
+  if (type !== 'post' && type !== 'comment') return json(400, { message: '举报对象不对' });
+  if (!target) return json(400, { message: '缺少对象 ID' });
+  if (ALLOWED_REASONS.indexOf(reason) < 0) return json(400, { message: '举报理由不对' });
+
+  try {
+    await sb('reports', {
+      method: 'POST',
+      body: JSON.stringify({ target_type: type, target_id: target, reason: reason, detail: detail })
+    });
+    return json(200, { ok: true });
+  } catch (err) {
+    return json(500, { message: '提交失败：' + String(err.message).slice(0, 120) });
   }
 }
