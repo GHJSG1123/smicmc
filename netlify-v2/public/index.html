@@ -547,6 +547,11 @@ a.alias:hover{color:#fff}
 .update-add{display:flex;gap:8px}
 .update-add .input{flex:1}
 
+.staff-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:0 0 8px;padding:6px 10px;border-radius:8px;background:rgba(244,63,94,.12);border:1px solid rgba(244,63,94,.25);font-size:12px;color:#fda4af}
+.staff-exit{font-size:11.5px;padding:2px 8px;border-radius:6px;background:rgba(0,0,0,.3);color:#fff}
+
+.build-tag{display:block;margin-top:6px;font-size:10.5px;color:#2e2e36}
+
 </style>
 </head>
 <body>
@@ -573,7 +578,7 @@ a.alias:hover{color:#fff}
 
 <div class="layout">
 
-  <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a><button class="side-logout hidden" id="side-logout">退出登录</button>
+  <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a><button class="side-logout hidden" id="side-logout">退出登录</button><div class="staff-bar hidden" id="staff-bar"></div>
     <a href="#/" data-nav="feed"><span class="nav-ico">🏠</span>首页</a>
     <a href="#/hot" data-nav="hot"><span class="nav-ico">🔥</span>热榜</a>
     <a href="#/new" data-nav="new"><span class="nav-ico">✍️</span>发布</a>
@@ -620,6 +625,7 @@ a.alias:hover{color:#fff}
 <footer class="site-foot">
   本站内容为用户发布，不代表本站立场。<br>
   请勿发布他人隐私或未经证实的信息。
+<span class="build-tag">build v14</span>
 </footer>
 
 <script>
@@ -917,6 +923,24 @@ a.alias:hover{color:#fff}
       if (loginBtn) loginBtn.classList.remove('hidden');
       if (regBtn) regBtn.classList.remove('hidden');
       if (side) side.classList.add('hidden');
+    }
+
+    const sbar = $( '#staff-bar' );
+    if (sbar) {
+      if (isStaff()) {
+        sbar.classList.remove('hidden');
+        sbar.innerHTML = '<span>' + (staff.kind === 'admin' ? '管理员模式' : '保安模式') + '</span><button class="staff-exit" id="staff-exit">退出</button>';
+        const ex = $( '#staff-exit' );
+        const curKind = staff.kind;
+        if (ex) ex.addEventListener('click', () => {
+          saveStaff(null);
+          toast(curKind === 'admin' ? '已退出管理员模式' : '已退出保安模式');
+          location.reload();
+        });
+      } else {
+        sbar.classList.add('hidden');
+        sbar.innerHTML = '';
+      }
     }
 
     const outBtn = $('#side-logout');
