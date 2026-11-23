@@ -572,6 +572,15 @@ a.alias:hover{color:#fff}
 }
 .nav-checkin.done{opacity:.5}
 
+/* ---------------- 瓜票 / 加辣 ---------------- */
+.tk{margin-left:auto;font-size:11.5px;color:#fbbf24;white-space:nowrap}
+.hot-flag{
+  margin-left:auto;margin-right:6px;font-size:11px;padding:1px 7px;border-radius:999px;
+  background:rgba(249,115,22,.16);color:#fdba74;border:1px solid rgba(249,115,22,.35);white-space:nowrap;
+}
+.act.boost{color:#fdba74}
+.act.boost:hover{background:rgba(249,115,22,.12);color:#fff}
+
 </style>
 </head>
 <body>
@@ -650,7 +659,7 @@ a.alias:hover{color:#fff}
 <footer class="site-foot">
   本站内容为用户发布，不代表本站立场。<br>
   请勿发布他人隐私或未经证实的信息。
-<span class="build-tag">build v16</span>
+<span class="build-tag">build v19</span>
 </footer>
 
 <script>
@@ -783,6 +792,17 @@ a.alias:hover{color:#fff}
       tally +
     '</div>';
   }
+  function boostLeftMin(p) {
+    if (!p.boost_until) return 0;
+    const ms = new Date(p.boost_until).getTime() - Date.now();
+    return ms > 0 ? Math.ceil(ms / 60000) : 0;
+  }
+  function boostEff(p) {
+    const left = boostLeftMin(p);
+    if (!left) return 0;
+    return Math.round((p.boost_score || 0) * left / 30);
+  }
+
   function levelTag(exp) {
     const lv = levelOf(exp);
     return '<span class="lv lv-' + lv.idx + '">' + lv.icon + ' ' + lv.name + '</span>';
@@ -973,7 +993,8 @@ a.alias:hover{color:#fff}
       if (side) {
         side.classList.remove('hidden');
         side.innerHTML = '<span class="avatar" style="--h:' + hue(n) + '">' + esc(n.charAt(0)) + '</span>' +
-          '<span class="side-name">' + esc(n) + '</span>';
+          '<span class="side-name">' + esc(n) + '</span>' +
+          '<span class="tk">🎫 ' + ((me && me.tickets) || 0) + '</span>';
       }
     } else {
       if (chip) chip.classList.add('hidden');
@@ -1089,7 +1110,12 @@ a.alias:hover{color:#fff}
   const filtered = () => {
     let list = S.posts.slice();
     if (S.filter) list = list.filter(p => p.category === S.filter);
-    if (S.sort === 'hot') list.sort((a, b) => (b.melon || 0) - (a.melon || 0));
+    if (S.sort === 'hot') list.sort(function (a, b) {
+      const score = function (p) {
+        return (p.melon || 0) * 3 + (S.counts[p.id] || 0) * 5 + boostEff(p);
+      };
+      return score(b) - score(a);
+    });
     if (S.sort === 'cred') list.sort((a, b) => (CRED_RANK[a.credibility] ?? 9) - (CRED_RANK[b.credibility] ?? 9));
     return list;
   };
@@ -1107,11 +1133,12 @@ a.alias:hover{color:#fff}
           '<span>·</span><span>' + relTime(p.created_at) + '</span>' +
           (p.school ? '<span>·</span><span>' + esc(p.school) + '</span>' : '') +
         '</div>' +
+        (boostLeftMin(p) ? '<span class="hot-flag">🔥 剩 ' + boostLeftMin(p) + ' 分</span>' : '') +
         '<span style="margin-left:auto">' + badge(p.credibility) + '</span>' +
       '</div>' +
       '<h2 class="card-title"><a href="#/p/' + esc(p.id) + '"><span' + strike + '>' + esc(p.title) + '</span></a></h2>' +
       '<p class="excerpt">' + esc(p.content) + '</p>' +
-      (p.images && p.images.length ? '<div class="card-imgs">' + p.images.slice(0, 3).map(function (src) { return '<img src="' + src + '" alt="" />'; }).join('') + '</div>' : '') +
+      (p.images && p.images.length ? '<div class="card-imgs">' + p.images.slice(0, 3).map(function (src) { return '<img src="' + esc(src) + '" alt="" />'; }).join('') + '</div>' : '') +
       '<div class="card-tags"><span class="tag">' + esc(CAT_LABEL[p.category] || '其他') + '</span>' +
         (p.tags || []).slice(0, 3).map(t => '<span class="tag">#' + esc(t) + '</span>').join('') +
       '</div>' +
@@ -1119,6 +1146,7 @@ a.alias:hover{color:#fff}
       '<div class="card-actions">' +
         '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
         '<a class="act" href="#/p/' + esc(p.id) + '">💬 ' + n + '</a>' +
+        (isLoggedIn() ? '<button class="act boost" data-act="boost" data-id="' + esc(p.id) + '">🔥 加辣 5</button>' : '') +
         (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
         '<button class="act" data-act="report" style="margin-left:auto">举报</button>' +
       '</div>' +
@@ -1133,7 +1161,8 @@ a.alias:hover{color:#fff}
   function checkinBanner() {
     if (!isLoggedIn() || signedToday()) return '';
     return '<div class="checkin-banner">' +
-      '<span>📅 今天还没签到' + (me && me.streak ? '，已连签 ' + me.streak + ' 天' : '') + ' · 签到可涨经验</span>' +
+      '<span>📅 今天还没签到' + (me && me.streak ? '，已连签 ' + me.streak + ' 天' : '') +
+        ' · 签到可得经验 + 🎫 10 张瓜票</span>' +
       '<button class="btn btn-primary btn-sm" id="banner-checkin">立即签到</button>' +
     '</div>';
   }
@@ -1380,11 +1409,12 @@ a.alias:hover{color:#fff}
         '<div class="card-head"><a class="avatar-link" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + avatar(p.author_alias) + '</a>' +
           '<div class="card-meta"><span class="alias">' + esc(p.author_alias) + '</span>' +
           '<span>·</span><span>' + relTime(p.created_at) + '</span></div>' +
-          '<span style="margin-left:auto">' + badge(p.credibility) + '</span>' +
+          (boostLeftMin(p) ? '<span class="hot-flag">🔥 剩 ' + boostLeftMin(p) + ' 分</span>' : '') +
+        '<span style="margin-left:auto">' + badge(p.credibility) + '</span>' +
         '</div>' +
         '<h1>' + esc(p.title) + '</h1>' + debunk + warn +
         '<div class="detail-body">' + esc(p.content) + '</div>' +
-        (p.images && p.images.length ? '<div class="detail-imgs">' + p.images.map(function (src) { return '<img src="' + src + '" alt="" />'; }).join('') + '</div>' : '') +
+        (p.images && p.images.length ? '<div class="detail-imgs">' + p.images.map(function (src) { return '<img src="' + esc(src) + '" alt="" />'; }).join('') + '</div>' : '') +
         '<div class="card-tags" style="margin-top:16px">' +
           '<span class="tag">' + esc(CAT_LABEL[p.category] || '其他') + '</span>' +
           (p.school ? '<span class="tag">' + esc(p.school) + '</span>' : '') +
@@ -1393,7 +1423,8 @@ a.alias:hover{color:#fff}
         voteBar(p) +
       '<div class="card-actions">' +
           '<button class="act' + (voted ? ' on' : '') + '" data-act="melon">🍉 <span data-melon>' + (p.melon || 0) + '</span></button>' +
-          (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
+          (isLoggedIn() ? '<button class="act boost" data-act="boost" data-id="' + esc(p.id) + '">🔥 加辣 5</button>' : '') +
+        (canDeletePost(p) ? '<button class="act" data-act="del-post" data-id="' + esc(p.id) + '">删除</button>' : '') +
           ((p.credibility === 'rumor' || p.credibility === 'unverified') ? '<button class="act" data-act="evidence" data-id="' + esc(p.id) + '">求锤 ' + (p.evidence_count || 0) + '</button>' : '') +
           '<button class="act" data-act="report">举报</button>' +
         '</div>' +
@@ -1569,7 +1600,7 @@ a.alias:hover{color:#fff}
       const box = $('#f-imgs');
       if (!box) return;
       box.innerHTML = picked.map((src, i) =>
-        '<div class="img-preview"><img src="' + src + '" alt="" /><button class="img-del" data-idx="' + i + '">×</button></div>'
+        '<div class="img-preview"><img src="' + esc(src) + '" alt="" /><button class="img-del" data-idx="' + i + '">×</button></div>'
       ).join('');
       box.querySelectorAll('.img-del').forEach(b => {
         b.addEventListener('click', () => {
@@ -2107,6 +2138,19 @@ a.alias:hover{color:#fff}
     const seedBtn = e.target.closest('[data-seed]');
     if (seedBtn) return seedDemo(seedBtn);
 
+    const boostBtn = e.target.closest('[data-act="boost"]');
+    if (boostBtn) {
+      if (!isLoggedIn()) { openAuth('login'); return; }
+      try {
+        const r = await apiRaw('/boost', { method: 'POST', body: JSON.stringify({ post_id: boostBtn.dataset.id }) });
+        await ensureMe(true);
+        const mins = Math.max(1, Math.round((new Date(r.until).getTime() - Date.now()) / 60000));
+        toast('加辣成功 · 剩 ' + mins + ' 分钟 · 票 ' + r.tickets);
+        S.loaded = false;
+        route();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     const bannerCk = e.target.closest('#banner-checkin');
     if (bannerCk) { await doCheckin(); return; }
 
