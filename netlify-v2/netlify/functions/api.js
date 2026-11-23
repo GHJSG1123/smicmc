@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Netlify Function：Supabase 反向代理
  *
  * 浏览器 → https://smicmc.qd.je/api/rest/v1/posts
