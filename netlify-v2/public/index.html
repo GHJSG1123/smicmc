@@ -552,6 +552,26 @@ a.alias:hover{color:#fff}
 
 .build-tag{display:block;margin-top:6px;font-size:10.5px;color:#2e2e36}
 
+.vote-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%}
+.vote-acts{display:flex;gap:6px}
+.vote-btn.on{background:rgba(244,63,94,.15);border-color:rgba(244,63,94,.5);color:#fff}
+
+/* ---------------- 等级增强 / 签到 ---------------- */
+.lv-big{font-size:15px;font-weight:700;color:#fff;margin-top:2px}
+.lv-bar{width:100%;max-width:280px;height:7px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden;margin:8px auto 4px}
+.lv-bar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#f43f5e,#fb923c)}
+.lv-0{color:#9ca3af;background:rgba(156,163,175,.12);border-color:rgba(156,163,175,.28)}
+.lv-1{color:#4ade80;background:rgba(16,185,129,.14);border-color:rgba(16,185,129,.32)}
+.lv-2{color:#fbbf24;background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.34)}
+.lv-3{color:#fda4af;background:rgba(244,63,94,.18);border-color:rgba(244,63,94,.4)}
+.checkin-banner{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-bottom:14px;padding:10px 14px;border-radius:12px;
+  background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.28);
+  font-size:13px;color:#fecdd3;
+}
+.nav-checkin.done{opacity:.5}
+
 </style>
 </head>
 <body>
@@ -579,6 +599,7 @@ a.alias:hover{color:#fff}
 <div class="layout">
 
   <aside class="sidenav"><a class="side-user hidden" id="side-user" href="#/me"></a><button class="side-logout hidden" id="side-logout">退出登录</button><div class="staff-bar hidden" id="staff-bar"></div>
+    <a href="#/me" class="nav-checkin hidden" id="nav-checkin"><span class="nav-ico">📅</span><span id="nav-checkin-text">签到</span></a>
     <a href="#/" data-nav="feed"><span class="nav-ico">🏠</span>首页</a>
     <a href="#/hot" data-nav="hot"><span class="nav-ico">🔥</span>热榜</a>
     <a href="#/new" data-nav="new"><span class="nav-ico">✍️</span>发布</a>
@@ -600,6 +621,10 @@ a.alias:hover{color:#fff}
     <section class="rail-card">
       <h4>🏷 热门标签</h4>
       <div id="rail-tags" class="rail-body"><div class="rail-empty">还没有标签</div></div>
+    </section>
+    <section class="rail-card">
+      <h4>🏆 等级榜</h4>
+      <div id="rail-lb" class="rail-body"><div class="rail-empty">加载中…</div></div>
     </section>
     <section class="rail-card rail-about">
       <h4>关于</h4>
@@ -625,7 +650,7 @@ a.alias:hover{color:#fff}
 <footer class="site-foot">
   本站内容为用户发布，不代表本站立场。<br>
   请勿发布他人隐私或未经证实的信息。
-<span class="build-tag">build v14</span>
+<span class="build-tag">build v16</span>
 </footer>
 
 <script>
@@ -714,42 +739,53 @@ a.alias:hover{color:#fff}
     return h;
   }
   const LEVELS = [
-    { min: 0, name: '吃瓜群众' },
-    { min: 50, name: '瓜田常客' },
-    { min: 200, name: '资深瓜农' },
-    { min: 500, name: '瓜田守护者' }
+    { min: 0,   name: '吃瓜群众',   icon: '🌱' },
+    { min: 50,  name: '瓜田常客',   icon: '🍉' },
+    { min: 200, name: '资深瓜农',   icon: '🌾' },
+    { min: 500, name: '瓜田守护者', icon: '🛡️' }
   ];
 
   function levelOf(exp) {
     let idx = 0;
     for (let k = 0; k < LEVELS.length; k++) if ((exp || 0) >= LEVELS[k].min) idx = k;
-    return { name: LEVELS[idx].name, idx: idx, next: LEVELS[idx + 1] ? LEVELS[idx + 1].min : null };
+    return { name: LEVELS[idx].name, icon: LEVELS[idx].icon, idx: idx, next: LEVELS[idx + 1] ? LEVELS[idx + 1].min : null };
   }
 
   function voteBar(p) {
     const b = p.vote_believe || 0, d = p.vote_doubt || 0, u = p.vote_unsure || 0;
     const total = b + d + u;
     const mine = localStorage.getItem('gua:vote:' + p.id);
+    const pct = function (n) { return total ? Math.round(n * 100 / total) : 0; };
+    const LABEL = { believe: '信', doubt: '不信', unsure: '观望' };
 
-    if (!total) {
-      return '<div class="vote-bar">' +
-        '<span class="vote-q">你信吗</span>' +
-        '<button class="vote-btn" data-vote="believe" data-id="' + esc(p.id) + '">信</button>' +
-        '<button class="vote-btn" data-vote="doubt" data-id="' + esc(p.id) + '">不信</button>' +
-        '<button class="vote-btn" data-vote="unsure" data-id="' + esc(p.id) + '">观望</button>' +
-      '</div>';
-    }
-
-    const pct = n => total ? Math.round(n * 100 / total) : 0;
-    return '<div class="vote-bar">' +
-      '<div class="vote-res"><span>信 ' + pct(b) + '%</span><span>不信 ' + pct(d) + '%</span><span>观望 ' + pct(u) + '%</span>' +
-        '<em>' + total + ' 人已表态' + (mine ? ' · 你选了' + ({ believe: '信', doubt: '不信', unsure: '观望' }[mine] || '') : '') + '</em></div>' +
-      '<div class="vote-track">' +
-        '<i style="width:' + pct(b) + '%;background:#10b981"></i>' +
-        '<i style="width:' + pct(d) + '%;background:#f43f5e"></i>' +
-        '<i style="width:' + pct(u) + '%;background:#6b7280"></i>' +
-      '</div>' +
+    const buttons = '<div class="vote-acts">' +
+      ['believe', 'doubt', 'unsure'].map(function (k) {
+        return '<button class="vote-btn' + (mine === k ? ' on' : '') + '" data-vote="' + k + '" data-id="' + esc(p.id) + '">' + LABEL[k] + '</button>';
+      }).join('') +
     '</div>';
+
+    const tally = total
+      ? '<div class="vote-res">' +
+          '<span>信 ' + pct(b) + '%</span><span>不信 ' + pct(d) + '%</span><span>观望 ' + pct(u) + '%</span>' +
+          '<em>' + total + ' 人已表态' + (mine ? ' · 你选了' + LABEL[mine] : '') + '</em>' +
+        '</div>' +
+        '<div class="vote-track">' +
+          '<i style="width:' + pct(b) + '%;background:#10b981"></i>' +
+          '<i style="width:' + pct(d) + '%;background:#f43f5e"></i>' +
+          '<i style="width:' + pct(u) + '%;background:#6b7280"></i>' +
+        '</div>'
+      : '';
+
+    return '<div class="vote-bar">' +
+      '<div class="vote-line">' +
+        (mine ? '<span class="vote-q">你的态度</span>' : '<span class="vote-q">你信吗</span>' + buttons) +
+      '</div>' +
+      tally +
+    '</div>';
+  }
+  function levelTag(exp) {
+    const lv = levelOf(exp);
+    return '<span class="lv lv-' + lv.idx + '">' + lv.icon + ' ' + lv.name + '</span>';
   }
 
   const avatar = name =>
@@ -889,6 +925,27 @@ a.alias:hover{color:#fff}
     paintUserChip();
   }
   const isStaff = () => !!(staff && staff.token);
+
+  /* 我的资料（经验、连签） */
+  let me = null;
+  async function ensureMe(force) {
+    if (!isLoggedIn()) { me = null; return null; }
+    if (me && !force) return me;
+    try { me = await apiRaw('/user/me', { method: 'POST', body: '{}' }); }
+    catch (e) { me = null; }
+    return me;
+  }
+  const signedToday = () => !!me && String(me.last_checkin || '').slice(0, 10) === new Date().toISOString().slice(0, 10);
+
+  async function doCheckin() {
+    try {
+      const r = await apiRaw('/checkin', { method: 'POST', body: '{}' });
+      await ensureMe(true);
+      paintUserChip();
+      toast(r.already ? '今天已经签过了' : '签到成功 · 连签 ' + r.streak + ' 天');
+      route();
+    } catch (e) { toast(e.message); }
+  }
   const canDeletePost = p => isStaff() || (isLoggedIn() && p.author_id && p.author_id === account.id);
   const canDeleteComment = cm => isStaff() || (isLoggedIn() && cm.author_id && cm.author_id === account.id);
   let replyParent = null;
@@ -943,6 +1000,13 @@ a.alias:hover{color:#fff}
       }
     }
 
+    const navCk = $('#nav-checkin');
+    if (navCk) {
+      navCk.classList.toggle('hidden', !isLoggedIn());
+      const txt = $('#nav-checkin-text');
+      if (txt) txt.textContent = signedToday() ? '已签到' : '签到';
+      navCk.classList.toggle('done', signedToday());
+    }
     const outBtn = $('#side-logout');
     if (outBtn) outBtn.classList.toggle('hidden', !isLoggedIn());
   }
@@ -1039,7 +1103,7 @@ a.alias:hover{color:#fff}
       '<div class="card-head"><a class="avatar-link" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + avatar(p.author_alias) + '</a>' +
         '<div class="card-meta">' +
           '<a class="alias" href="#/u/' + encodeURIComponent(p.author_alias) + '">' + esc(p.author_alias) + '</a>' +
-          ((p.author_exp || 0) >= 50 ? '<span class="lv">' + levelOf(p.author_exp).name + '</span>' : '') +
+          (p.author_id ? levelTag(p.author_exp || 0) : '') +
           '<span>·</span><span>' + relTime(p.created_at) + '</span>' +
           (p.school ? '<span>·</span><span>' + esc(p.school) + '</span>' : '') +
         '</div>' +
@@ -1065,6 +1129,33 @@ a.alias:hover{color:#fff}
     '<div class="empty"><div class="empty-icon">' + icon + '</div>' +
     '<h3>' + esc(title) + '</h3><p>' + desc + '</p>' +
     (actions ? '<div class="empty-actions">' + actions + '</div>' : '') + '</div>';
+
+  function checkinBanner() {
+    if (!isLoggedIn() || signedToday()) return '';
+    return '<div class="checkin-banner">' +
+      '<span>📅 今天还没签到' + (me && me.streak ? '，已连签 ' + me.streak + ' 天' : '') + ' · 签到可涨经验</span>' +
+      '<button class="btn btn-primary btn-sm" id="banner-checkin">立即签到</button>' +
+    '</div>';
+  }
+
+  async function renderLeaderboard() {
+    const box = $('#rail-lb');
+    if (!box) return;
+    try {
+      const list = await apiRaw('/leaderboard', { method: 'GET' });
+      box.innerHTML = (list && list.length)
+        ? list.slice(0, 5).map(function (u, i) {
+            const lv = levelOf(u.exp);
+            return '<a class="rail-hot-item" href="#/u/' + encodeURIComponent(u.username) + '">' +
+              '<span class="rail-hot-no">' + (i + 1) + '</span>' +
+              '<span class="rail-hot-title">' + esc(u.username) + ' · ' + lv.icon + ' ' + lv.name + '</span>' +
+            '</a>';
+          }).join('')
+        : '<div class="rail-empty">还没有人上榜</div>';
+    } catch (e) {
+      box.innerHTML = '<div class="rail-empty">加载失败</div>';
+    }
+  }
 
   const chipRow = () => '<div class="chips">' + CATEGORIES.map(c =>
     '<button class="chip' + (S.filter === c.id ? ' on' : '') + '" data-cat="' + c.id + '">' + c.label + '</button>'
@@ -1230,7 +1321,7 @@ a.alias:hover{color:#fff}
 
   /* ================= 视图：首页 ================= */
   async function viewFeed() {
-    app.innerHTML = chipRow() + sortRow() + '<div id="list"></div>';
+    app.innerHTML = checkinBanner() + chipRow() + sortRow() + '<div id="list"></div>';
     $('#list').innerHTML = '<div class="skeleton-list">' +
       '<div class="sk-card"><div class="sk-line w40"></div><div class="sk-line w80"></div><div class="sk-line w60"></div></div>' +
       '<div class="sk-card"><div class="sk-line w30"></div><div class="sk-line w70"></div><div class="sk-line w50"></div></div>' +
@@ -1623,6 +1714,7 @@ a.alias:hover{color:#fff}
     const todayStr = new Date().toISOString().slice(0, 10);
     const checkedToday = String(p.last_checkin || '').slice(0, 10) === todayStr;
     const days = Math.max(1, Math.floor((Date.now() - new Date(p.created_at).getTime()) / 86400000) + 1);
+    const lvPct = lv.next ? Math.min(100, Math.round((p.exp || 0) * 100 / lv.next)) : 100;
     let posts = [];
     try {
       posts = await rest('posts?author_id=eq.' + p.id + '&select=*&order=created_at.desc&limit=30');
@@ -1641,9 +1733,10 @@ a.alias:hover{color:#fff}
           '<div class="stat"><b>' + (p.postCount || 0) + '</b><span>帖子</span></div>' +
         '</div>' +
         '<div class="profile-lv">' +
-          '<span class="lv">' + lv.name + '</span>' +
-          '<span class="hint">经验 ' + (p.exp || 0) + (lv.next ? ' / ' + lv.next : '') + ' · 连签 ' + (p.streak || 0) + ' 天</span>' +
-          (isMe ? '<button class="btn btn-sm" id="p-checkin">' + (checkedToday ? '今天已签到' : '签到') + '</button>' : '') +
+          '<div class="lv-big">' + lv.icon + ' ' + lv.name + '</div>' +
+          '<div class="lv-bar"><i style="width:' + lvPct + '%"></i></div>' +
+          '<div class="hint">经验 ' + (p.exp || 0) + (lv.next ? ' / ' + lv.next : '') + ' · 连签 ' + (p.streak || 0) + ' 天</div>' +
+          (isMe ? '<button class="btn btn-primary btn-sm" id="p-checkin">' + (checkedToday ? '今天已签到' : '📅 签到 +5 经验') + '</button>' : '') +
         '</div>' +
         '<div class="profile-actions">' +
           (isMe
@@ -2014,6 +2107,11 @@ a.alias:hover{color:#fff}
     const seedBtn = e.target.closest('[data-seed]');
     if (seedBtn) return seedDemo(seedBtn);
 
+    const bannerCk = e.target.closest('#banner-checkin');
+    if (bannerCk) { await doCheckin(); return; }
+
+    const navCkBtn = e.target.closest('#nav-checkin');
+    if (navCkBtn) { e.preventDefault(); await doCheckin(); return; }
     const voteBtn = e.target.closest('[data-vote]');
     if (voteBtn) {
       const vid = voteBtn.dataset.id;
@@ -2100,7 +2198,7 @@ a.alias:hover{color:#fff}
     const chip = e.target.closest('[data-cat]');
     if (chip) {
       S.filter = chip.dataset.cat;
-      app.innerHTML = chipRow() + sortRow() + '<div id="list"></div>';
+      app.innerHTML = checkinBanner() + chipRow() + sortRow() + '<div id="list"></div>';
       paintFeed();
       return;
     }
@@ -2146,11 +2244,12 @@ a.alias:hover{color:#fff}
     app.innerHTML = empty('🫥', '页面不存在', '链接可能不对。', '<a class="btn" href="#/">回首页</a>');
   }
 
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', function () { route(); renderLeaderboard(); });
 
   /* ================= 启动 ================= */
   (async function boot() {
     loadAccount();
+    await ensureMe();
     paintUserChip();
     if (!localStorage.getItem('gua:first')) localStorage.setItem('gua:first', new Date().toISOString());
     deviceId(); alias();

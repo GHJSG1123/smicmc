@@ -47,6 +47,7 @@ exports.handler = async function (event) {
   if (path === '/evidence')        return handleEvidence(event);
   if (path === '/update/add')      return handleUpdateAdd(event);
   if (path === '/checkin')         return handleCheckin(event);
+  if (path === '/leaderboard')     return handleLeaderboard(event);
 
   if (event.body && String(event.body).length > 30000) {
     return json(413, { message: '内容太大了' });
@@ -456,10 +457,6 @@ async function handleUserMe(event) {
     const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
     p = byId && byId[0];
 
-    if (!p && info.n) {
-      const byName = await sb('profiles?username=eq.' + encodeURIComponent(info.n) + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
-      p = byName && byName[0];
-    }
 
     if (!p) {
       try {
@@ -472,7 +469,16 @@ async function handleUserMe(event) {
           })
         });
         p = created && created[0];
-      } catch (e) {}
+      } catch (e) {
+        try {
+          const alt = (info.n || '用户') + '_' + String(info.u).slice(0, 4);
+          const created2 = await sb('profiles', {
+            method: 'POST',
+            body: JSON.stringify({ id: info.u, username: alt, pass_hash: '!' })
+          });
+          p = created2 && created2[0];
+        } catch (e2) {}
+      }
 
       if (!p) {
         const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
@@ -857,5 +863,20 @@ async function handleCheckin(event) {
     return json(200, r || { ok: true });
   } catch (err) {
     return json(500, { message: '签到失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 等级榜 ---------------- */
+async function handleLeaderboard(event) {
+  if (!rateLimit('lb:' + clientIp(event), 30, 60000)) {
+    return json(429, { message: '刷太快了' });
+  }
+  try {
+    const rows = await sb('profiles?select=username,exp&order=exp.desc&limit=10');
+    return json(200, (rows || []).map(function (r) {
+      return { username: r.username, exp: r.exp || 0 };
+    }));
+  } catch (err) {
+    return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
   }
 }
