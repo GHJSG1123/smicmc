@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Netlify Function：Supabase 反向代理
  *
  * 浏览器 → https://smicmc.qd.je/api/rest/v1/posts
@@ -24,6 +24,10 @@ exports.handler = async function (event) {
   path = path.replace(/^\/\.netlify\/functions\/api/, '').replace(/^\/api/, '');
   if (!path) path = '/';
 
+  if (event.body && String(event.body).length > 600000) {
+    return json(413, { message: '内容太大了' });
+  }
+
   /* 用户名 + 密码账号：不经过 Supabase Auth，不发任何邮件 */
   if (path === '/auth/register' || path === '/auth/login') {
     return handleAuth(path === '/auth/register', event);
@@ -48,6 +52,7 @@ exports.handler = async function (event) {
   if (path === '/update/add')      return handleUpdateAdd(event);
   if (path === '/checkin')         return handleCheckin(event);
   if (path === '/leaderboard')     return handleLeaderboard(event);
+  if (path === '/boost')           return handleBoost(event);
 
   if (event.body && String(event.body).length > 30000) {
     return json(413, { message: '内容太大了' });
@@ -124,7 +129,7 @@ exports.handler = async function (event) {
    ===================================================================== */
 const crypto = require('crypto');
 
-const PEPPER = process.env.AUTH_SECRET || process.env.SUPABASE_SERVICE_KEY || process.env.ADMIN_PASSWORD || 'gua-default-pepper';
+const PEPPER = process.env.AUTH_SECRET || process.env.SUPABASE_SERVICE_KEY || process.env.ADMIN_PASSWORD || require('crypto').randomBytes(32).toString('hex');
 
 function hashPass(username, password) {
   return crypto.createHmac('sha256', PEPPER)
@@ -175,7 +180,7 @@ async function handleAuth(isRegister, event) {
   if (!/^[\u4e00-\u9fa5A-Za-z0-9_.-]+$/.test(username)) return json(400, { message: '用户名只能用中文、字母、数字、下划线' });
 
   try {
-    const rows = await sb('profiles?username=eq.' + encodeURIComponent(username) + '&select=id,username,pass_hash');
+    const rows = await sb('profiles?username=eq.' + encodeURIComponent(username) + '&select=id,username,pass_hash,token_version,fail_count,locked_until');
     const exist = rows && rows[0];
 
     if (isRegister) {
@@ -190,7 +195,23 @@ async function handleAuth(isRegister, event) {
     }
 
     if (!exist) return json(401, { message: '用户名或密码不对' });
-    if (!checkPass(exist.pass_hash, username, password)) return json(401, { message: '用户名或密码不对' });
+
+    if (exist.locked_until && new Date(exist.locked_until).getTime() > Date.now()) {
+      return json(429, { message: '尝试次数过多，请 15 分钟后再试' });
+    }
+
+    if (!checkPass(exist.pass_hash, username, password)) {
+      const fails = (exist.fail_count || 0) + 1;
+      const patch = fails >= 5
+        ? { fail_count: 0, locked_until: new Date(Date.now() + 15 * 60000).toISOString() }
+        : { fail_count: fails };
+      try { await sb('profiles?id=eq.' + exist.id, { method: 'PATCH', prefer: 'return=minimal', body: JSON.stringify(patch) }); } catch (e) {}
+      return json(401, { message: '用户名或密码不对' });
+    }
+
+    if ((exist.fail_count || 0) > 0 || exist.locked_until) {
+      try { await sb('profiles?id=eq.' + exist.id, { method: 'PATCH', prefer: 'return=minimal', body: JSON.stringify({ fail_count: 0, locked_until: null }) }); } catch (e) {}
+    }
 
     if (String(exist.pass_hash || '').indexOf('scrypt$') !== 0) {
       try {
@@ -327,7 +348,8 @@ async function handleUserGet(event) {
     return json(200, {
       id: p.id, username: p.username, bio: p.bio || '',
       tags: p.tags || [], created_at: p.created_at, postCount: postCount,
-      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null
+      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null,
+      tickets: p.tickets || 0
     });
   } catch (err) {
     return json(500, { message: '查询失败：' + String(err.message).slice(0, 120) });
@@ -454,7 +476,7 @@ async function handleUserMe(event) {
   try {
     let p = null;
 
-    const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
+    const byId = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin,tickets');
     p = byId && byId[0];
 
 
@@ -481,7 +503,7 @@ async function handleUserMe(event) {
       }
 
       if (!p) {
-        const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin');
+        const again = await sb('profiles?id=eq.' + info.u + '&select=id,username,bio,tags,created_at,exp,streak,last_checkin,tickets');
         p = again && again[0];
       }
     }
@@ -497,7 +519,8 @@ async function handleUserMe(event) {
     return json(200, {
       id: p.id, username: p.username, bio: p.bio || '',
       tags: p.tags || [], created_at: p.created_at, postCount: postCount,
-      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null
+      exp: p.exp || 0, streak: p.streak || 0, last_checkin: p.last_checkin || null,
+      tickets: p.tickets || 0
     });
   } catch (err) {
     return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
@@ -511,7 +534,9 @@ async function handleMelon(event) {
   }
   const body = readBody(event) || {};
   const id = String(body.post_id || '');
-  const dev = String(body.device_id || '');
+  const uidM = await authUid(event);
+  const rawDevM = String(body.device_id || '').trim();
+  const dev = uidM ? ('u:' + uidM) : ('d:' + rawDevM.slice(0, 80));
   if (!id || !dev) return json(400, { message: '参数不全' });
 
   try {
@@ -571,7 +596,9 @@ async function handlePostCreate(event) {
   const school = String(body.school || '').trim().slice(0, 40) || null;
 
   let images = Array.isArray(body.images) ? body.images : [];
-  images = images.filter(function (x) { return typeof x === 'string' && x.indexOf('data:image/') === 0; }).slice(0, 3);
+  images = images.filter(function (x) {
+    return typeof x === 'string' && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+\/]+=*$/.test(x);
+  }).slice(0, 3);
   const imgBytes = images.reduce(function (n2, s) { return n2 + s.length; }, 0);
   if (imgBytes > 400000) return json(413, { message: '图片太大了，压缩后再传' });
 
@@ -600,6 +627,7 @@ async function handlePostCreate(event) {
     });
     if (authorId) {
       try { await sb('rpc/bump_exp', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_n: 10 }) }); } catch (e) {}
+      try { await sb('rpc/earn_tickets', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_kind: 'post', p_amount: 5, p_cap: 15 }) }); } catch (e) {}
     }
     return json(200, (rows && rows[0]) || { ok: true });
   } catch (err) {
@@ -636,6 +664,7 @@ async function handleCommentCreate(event) {
     });
     if (authorId) {
       try { await sb('rpc/bump_exp', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_n: 2 }) }); } catch (e) {}
+      try { await sb('rpc/earn_tickets', { method: 'POST', body: JSON.stringify({ p_uid: authorId, p_kind: 'comment', p_amount: 1, p_cap: 10 }) }); } catch (e) {}
     }
     return json(200, (rows && rows[0]) || { ok: true });
   } catch (err) {
@@ -671,7 +700,7 @@ async function handleReportCreate(event) {
 
 /* ---------------- 保安 / 管理员 ---------------- */
 function makeStaffToken(kind) {
-  const payload = Buffer.from(JSON.stringify({ r: kind, x: Date.now() + 12 * 3600 * 1000 })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ r: kind, x: Date.now() + 2 * 3600 * 1000 })).toString('base64url');
   const sig = crypto.createHmac('sha256', PEPPER).update('staff:' + payload).digest('base64url');
   return payload + '.' + sig;
 }
@@ -768,7 +797,9 @@ async function handleVote(event) {
   const body = readBody(event) || {};
   const postId = String(body.post_id || '').trim();
   const choice = String(body.choice || '');
-  const dev = String(body.device_id || '').trim();
+  const uidV = await authUid(event);
+  const rawDev = String(body.device_id || '').trim();
+  const dev = uidV ? ('u:' + uidV) : ('d:' + rawDev.slice(0, 80));
 
   if (!postId || !dev) return json(400, { message: '参数不全' });
   if (['believe', 'doubt', 'unsure'].indexOf(choice) < 0) return json(400, { message: '选项不对' });
@@ -805,7 +836,9 @@ async function handleEvidence(event) {
 
   const body = readBody(event) || {};
   const postId = String(body.post_id || '').trim();
-  const dev = String(body.device_id || '').trim();
+  const uidV = await authUid(event);
+  const rawDev = String(body.device_id || '').trim();
+  const dev = uidV ? ('u:' + uidV) : ('d:' + rawDev.slice(0, 80));
   if (!postId || !dev) return json(400, { message: '参数不全' });
 
   try {
@@ -878,5 +911,44 @@ async function handleLeaderboard(event) {
     }));
   } catch (err) {
     return json(500, { message: '读取失败：' + String(err.message).slice(0, 120) });
+  }
+}
+
+/* ---------------- 瓜票：加辣 ---------------- */
+async function handleBoost(event) {
+  const uid = await authUid(event);
+  if (!uid) return json(401, { message: '请先登录' });
+
+  if (!rateLimit('boost:' + clientIp(event), 20, 60000)) {
+    return json(429, { message: '点太快了' });
+  }
+
+  const body = readBody(event) || {};
+  const postId = String(body.post_id || '').trim();
+  if (!postId) return json(400, { message: '缺少帖子' });
+
+  try {
+    const exist = await sb('posts?id=eq.' + postId + '&select=id');
+    if (!exist || !exist.length) return json(404, { message: '帖子不存在' });
+
+    const rows = await sb('rpc/do_boost', {
+      method: 'POST',
+      body: JSON.stringify({ p_uid: uid, p_post: postId })
+    });
+    const r = Array.isArray(rows) ? rows[0] : rows;
+
+    if (!r || !r.ok) {
+      if (r && r.reason === 'no_tickets') {
+        return json(400, { message: '瓜票不够，还差 ' + (5 - (r.tickets || 0)) + ' 张' });
+      }
+      if (r && r.reason === 'already') {
+        return json(409, { message: '这个帖子你今天已经加过辣了' });
+      }
+      return json(400, { message: '加辣失败' });
+    }
+
+    return json(200, { score: r.score, until: r.until, tickets: r.tickets });
+  } catch (err) {
+    return json(500, { message: '加辣失败：' + String(err.message).slice(0, 120) });
   }
 }
